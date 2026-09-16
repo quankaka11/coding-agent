@@ -1,0 +1,71 @@
+# Hồ sơ repo thật: ticket ở Backlog, code ở GitLab.
+# Khoá KHÔNG nằm trong file này — chúng đọc từ .env theo tên biến khai bên dưới.
+repo_id: agent-coding
+base_branch: main
+pilot_type: infrastructure
+
+allowed_paths:
+  - "src/**"
+  - "tests/**"
+forbidden_paths:
+  - "prompts/**"
+  - "pyproject.toml"
+  - "ci/**"
+  - "**/.gitlab-ci.yml"
+  - "**/.github/workflows/**"
+
+test_globs:
+  - "tests/**"
+  - "**/test_*.py"
+  - "**/*_test.py"
+
+commands:
+  test: "python3 -m pytest -q --junitxml={junit} -o junit_family=xunit1"
+  lint: "python3 -m compileall -q src tests"
+  coverage: "python3 -m pytest -q --cov=src --cov-report=json:{coverage_json}"
+
+checks:
+  build:       {status: out_of_scope, reason: "Python thuần, không có bước build riêng"}
+  test:        {status: available}
+  lint:        {status: available}
+  typecheck:   {status: out_of_scope, reason: "repo chưa có cấu hình mypy"}
+  secret_scan: {status: out_of_scope, reason: "chưa cài gitleaks trong môi trường chạy"}
+  sast:        {status: out_of_scope, reason: "chưa cài semgrep trong môi trường chạy"}
+
+limits:
+  gate_fix_rounds: 2
+  same_error_limit: 3
+  same_file_edit_limit: 6
+  flaky_rerun: 3
+  run_timeout_min: 60
+  run_cost_cap_usd: 15
+  cmd_timeout_sec: 900
+  coverage_new_line_pct: 80
+
+conventions:
+  ac_marker: "pytest.mark.ac"
+
+mutation: {enabled: false, max_mutants: 20, timeout_sec: 300, min_kill_pct: 70}
+
+tracker:
+  kind: backlog
+  space: testagent.backlog.com
+  project: "831684"
+  api_key_env: backlog_api_key
+
+forge:
+  kind: gitlab
+  url: https://git.hblab.vn
+  project: quannt/agent-coding
+  token_env: gitlab_token
+
+notify:
+  kind: webhook
+  url_env: google_chat_webhook
+  events: [plan-ready, needs-human, mr-created]
+
+agent:
+  binary: claude
+  permission_mode: acceptEdits
+  allowed_tools: "Read,Write,Edit,Glob,Grep,Bash"
+  timeout_sec: 1800

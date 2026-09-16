@@ -17,7 +17,8 @@ e2e_agent/
   tracker/   nơi chứa TICKET: backlog (Nulab) · gitlab issues · file
   forge/     nơi chứa CODE: gitlab (push nhánh + MR) · file
   agent/     gọi Claude Code headless, schema spec
-  pipeline/  sandbox, Phase A, Phase B, orchestrator
+  pipeline/  sandbox, Phase A, Phase B, orchestrator, watcher
+  notify/    thông báo ra ngoài: Google Chat / Slack / webhook
   skills/    5 skill cho agent (đi kèm trong gói)
   hooks/     PreToolUse hook chặn forbidden_paths
 ```
@@ -34,11 +35,13 @@ pip install -e ".[dev]"     # hoặc: PYTHONPATH=src python3 -m e2e_agent.cli
 e2ea doctor       --profile p.yaml --repo R      # soát hồ sơ với repo thật
 e2ea labels-init  --profile p.yaml --repo R      # tạo label trên tracker
 
+e2ea new-ticket --profile p.yaml --repo R --title "..." --file t.md   # tạo ticket để thử
 e2ea phase-a  --profile p.yaml --repo R --ticket 42     # Intake → Discovery → Planning
 e2ea approve  --profile p.yaml --repo R --ticket 42     # người duyệt → tạo ticket chi tiết
 e2ea reject   --profile p.yaml --repo R --ticket 42 --why "..."
 e2ea phase-b  --profile p.yaml --repo R --ticket 43     # Baseline → … → MR
-e2ea scan     --profile p.yaml --repo R                 # một vòng quét label
+e2ea watch    --profile p.yaml --repo R --interval 60   # VÒNG TỰ ĐỘNG: quét → xử lý → lặp
+e2ea scan     --profile p.yaml --repo R                 # một vòng rồi thoát (cho cron)
 
 e2ea check    --profile p.yaml --repo R --base-sha <sha>   # gate + anti-gaming (CI dùng)
 e2ea report   --run-dir runs/43/<run_id>

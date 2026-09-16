@@ -12,7 +12,7 @@ CHECKS = ("build", "test", "lint", "typecheck", "secret_scan", "sast")
 STATUSES = ("available", "out_of_scope")
 _TOP = {"repo_id", "base_branch", "pilot_type", "allowed_paths", "forbidden_paths",
         "test_globs", "commands", "checks", "limits", "conventions", "mutation",
-        "tracker", "forge", "agent"}
+        "tracker", "forge", "agent", "notify"}
 
 DEFAULT_LIMITS = {
     "gate_fix_rounds": 2, "same_error_limit": 3, "same_file_edit_limit": 6,
@@ -25,6 +25,7 @@ DEFAULT_TRACKER = {"kind": "file", "root": "backlog", "url": "", "project": "",
                    "issue_type_id": None}
 DEFAULT_FORGE = {"kind": "file", "root": "backlog", "url": "", "project": "",
                  "token_env": "GITLAB_TOKEN"}
+DEFAULT_NOTIFY = {"kind": "none", "url_env": "NOTIFY_WEBHOOK_URL", "events": None}
 DEFAULT_AGENT = {"binary": "claude", "model": None, "permission_mode": "acceptEdits",
                  "allowed_tools": "Read,Write,Edit,Glob,Grep,Bash", "timeout_sec": 1800}
 
@@ -49,6 +50,7 @@ class Profile:
     tracker: dict[str, Any] = field(default_factory=dict)
     forge: dict[str, Any] = field(default_factory=dict)
     agent: dict[str, Any] = field(default_factory=dict)
+    notify: dict[str, Any] = field(default_factory=dict)
     source: Path | None = None
 
     # -- truy vấn --------------------------------------------------------
@@ -75,6 +77,9 @@ class Profile:
 
     def agent_cfg(self, key: str) -> Any:
         return self.agent.get(key, DEFAULT_AGENT[key])
+
+    def notify_cfg(self, key: str) -> Any:
+        return self.notify.get(key, DEFAULT_NOTIFY[key])
 
 
 def load(path: str | Path) -> Profile:
@@ -119,6 +124,10 @@ def _validate(p: Profile) -> None:
         errs.append(f"forge có khoá lạ {sorted(unknown)}")
     if unknown := set(p.agent) - set(DEFAULT_AGENT):
         errs.append(f"agent có khoá lạ {sorted(unknown)}")
+    if unknown := set(p.notify) - set(DEFAULT_NOTIFY):
+        errs.append(f"notify có khoá lạ {sorted(unknown)}")
+    if p.notify_cfg("kind") not in ("none", "webhook"):
+        errs.append("notify.kind phải là none hoặc webhook")
     if p.tracker_cfg("kind") not in ("file", "gitlab", "backlog"):
         errs.append("tracker.kind phải là file, gitlab hoặc backlog")
     if p.tracker_cfg("kind") == "gitlab" and not (p.tracker_cfg("url") and p.tracker_cfg("project")):
@@ -158,6 +167,16 @@ def doctor(p: Profile, repo: Path) -> list[tuple[str, bool, str]]:
         tool = cmd.split()[0] if cmd else ""
         found = bool(tool) and (shutil.which(tool) is not None or tool in ("python", "python3"))
         out.append((f"check {name}", found, cmd if found else f"không thấy lệnh {tool!r} trong PATH"))
+
+    kind = p.notify_cfg("kind")
+    if kind == "none":
+        out.append(("notify", True, "tắt — plan sẵn sàng sẽ không có ai được báo"))
+    else:
+        from ..core.secrets import read_secret
+        ok = bool(read_secret(p.notify_cfg("url_env")))
+        out.append((f"notify {kind}", ok,
+                    f"đọc từ {p.notify_cfg('url_env')}" if ok
+                    else f"không thấy {p.notify_cfg('url_env')} trong env hoặc .env"))
 
     if "{junit}" not in p.commands.get("test", ""):
         out.append(("commands.test có {junit}", False,

@@ -12,8 +12,9 @@ from . import metrics as metrics_mod, report as report_mod
 from .config import profile as profile_mod
 from .core import gitutil
 from .enforce import antigaming, baseline as baseline_mod, gate as gate_mod, mutation
-from . import agent as agent_mod, forge as forge_mod, tracker as tracker_mod
+from . import agent as agent_mod, forge as forge_mod, notify as notify_mod, tracker as tracker_mod
 from .pipeline.orchestrator import Orchestrator
+from .pipeline.watcher import Watcher
 from .tracker import base as L
 from .config.profile import ProfileError
 from .core.reasons import LABEL, Reason
@@ -128,6 +129,7 @@ def _orchestrator(args, prof, repo):
     agent = agent_mod.make(prof)
     return Orchestrator(prof=prof, profile_path=Path(args.profile).resolve(), repo=repo,
                         tracker=tracker, agent=agent, forge=forge_mod.make(prof, base_dir),
+                        notifier=notify_mod.make(prof), notify_events=notify_mod.wanted(prof),
                         runs_root=Path(args.runs_root), work_root=Path(args.work_root),
                         package_root=PACKAGE_ROOT, log_level=args.log_level,
                         console=not args.quiet), tracker
@@ -143,6 +145,20 @@ def cmd_scan(args) -> int:
         print("không có ticket nào ở trạng thái chờ xử lý")
     for ticket_id, outcome in done:
         print(f"{ticket_id}: {outcome}")
+    return 0
+
+
+def cmd_watch(args) -> int:
+    """Chạy liên tục: quét backlog → chạy bước tương ứng → lặp. Ctrl-C để dừng."""
+    prof = profile_mod.load(args.profile)
+    repo = Path(args.repo).resolve()
+    orch, _ = _orchestrator(args, prof, repo)
+    watcher = Watcher(orch=orch, interval=args.interval, runs_root=Path(args.runs_root),
+                      log_level=args.log_level, console=not args.quiet)
+    handled = watcher.run(max_cycles=args.max_cycles)
+    if handled < 0:
+        return 2
+    print(f"đã xử lý {handled} lượt ticket")
     return 0
 
 
@@ -176,6 +192,20 @@ def cmd_reject(args) -> int:
     orch, tracker = _orchestrator(args, prof, Path(args.repo).resolve())
     outcome = orch.reject(tracker.get(args.ticket), args.why)
     print("đã ghi nhận từ chối" if outcome is Reason.OK else "quá số lần cho phép → NO_MR")
+    return 0
+
+
+def cmd_new_ticket(args) -> int:
+    """Tạo ticket thẳng từ CLI — tiện để thử luồng và để viết kịch bản test."""
+    prof = profile_mod.load(args.profile)
+    _, tracker = _orchestrator(args, prof, Path(args.repo).resolve())
+    body = Path(args.file).read_text(encoding="utf-8") if args.file else (args.body or "")
+    if not body.strip():
+        print("cần --file hoặc --body: ticket không có mô tả thì Intake sẽ trả NOMR_NOT_READY",
+              file=sys.stderr)
+        return 2
+    ticket = tracker.create_ticket(args.title, body, [args.label])
+    print(f"{ticket.id}  {ticket.url}")
     return 0
 
 
@@ -319,8 +349,18 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--work-root", default=str(WORK_DIR))
         return sp
 
-    _life("scan", "quét label và chạy bước tương ứng").set_defaults(func=cmd_scan)
+    _life("scan", "quét một vòng rồi thoát").set_defaults(func=cmd_scan)
+    w = _life("watch", "chạy liên tục: quét → xử lý → lặp (dùng cho vòng tự động)")
+    w.add_argument("--interval", type=int, default=60, help="giây giữa hai vòng quét")
+    w.add_argument("--max-cycles", type=int, default=None, help="dừng sau N vòng (để test)")
+    w.set_defaults(func=cmd_watch)
     _life("tickets", "liệt kê ticket theo trạng thái").set_defaults(func=cmd_tickets)
+    nt = _life("new-ticket", "tạo ticket trên backlog (để thử luồng)")
+    nt.add_argument("--title", required=True)
+    nt.add_argument("--file", help="file markdown chứa mô tả")
+    nt.add_argument("--body", help="mô tả ngắn, thay cho --file")
+    nt.add_argument("--label", default=L.TRY, choices=L.STATE_LABELS)
+    nt.set_defaults(func=cmd_new_ticket)
     _life("labels-init", "tạo trước label trên tracker").set_defaults(func=cmd_labels_init)
     pa = _life("phase-a", "chạy Intake/Discovery/Planning cho một ticket")
     pa.add_argument("--ticket", required=True)

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "e2e-agent"
-version = "0.3.0"
+version = "0.4.0"
 description = "Lớp cưỡng chế cho E2E Coding Agent: baseline, gate, anti-gaming"
 requires-python = ">=3.10"
 dependencies = ["PyYAML>=6"]

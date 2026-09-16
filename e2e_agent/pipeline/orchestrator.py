@@ -14,6 +14,8 @@ from ..config.profile import Profile
 from ..core import gitutil
 from ..core.reasons import LABEL, Reason
 from ..core.run import RunContext, run_context
+from ..notify import NullNotifier
+from ..notify.base import MR_CREATED, NEEDS_HUMAN, NO_MR, PLAN_READY, Notice
 from ..tracker import base as L
 from ..tracker.base import Ticket, Tracker
 from . import phase_a, phase_b, sandbox
@@ -24,9 +26,12 @@ MAX_REJECTS = 2
 class Orchestrator:
     def __init__(self, prof: Profile, profile_path: Path, repo: Path, tracker: Tracker,
                  agent, runs_root: Path, work_root: Path, package_root: Path,
-                 forge=None, log_level: str = "info", console: bool = True) -> None:
+                 forge=None, notifier=None, notify_events: list[str] | None = None,
+                 log_level: str = "info", console: bool = True) -> None:
         self.prof, self.profile_path, self.repo = prof, profile_path, repo
         self.tracker, self.agent, self.forge = tracker, agent, forge
+        self.notifier = notifier or NullNotifier()
+        self.notify_events = notify_events or [PLAN_READY, NEEDS_HUMAN, MR_CREATED]
         self.runs_root, self.work_root, self.package_root = runs_root, work_root, package_root
         self.log_level, self.console = log_level, console
 
@@ -51,6 +56,9 @@ class Orchestrator:
             self.tracker.comment(ticket.id, _plan_comment(out["plan"], out["spec"], base_sha))
             self.tracker.set_state(ticket.id, L.PLAN_READY)
             self.tracker.notify(ticket.id, _notice(ticket))
+            self._announce(ctx, PLAN_READY, "Plan chờ duyệt", ticket,
+                           f"**{ticket.title}**\n\nĐổi category sang `{L.PLAN_APPROVED}` để duyệt, "
+                           f"hoặc `{L.PLAN_REJECTED}` kèm comment lý do.\nChưa dòng code nào bị sửa.")
             ctx.decide(Reason.OK, "plan đã sẵn sàng, chờ người duyệt",
                        label=L.PLAN_READY, base_sha=base_sha[:8])
         self._finalize(ticket, ctx, skip_label=ctx.outcome is Reason.OK)
@@ -111,6 +119,17 @@ class Orchestrator:
                            cost_cap_usd=self.prof.limit("run_cost_cap_usd"),
                            log_level=self.log_level, console=self.console)
 
+    def _announce(self, ctx: RunContext, event: str, title: str, ticket: Ticket,
+                  body: str, url: str = "") -> None:
+        """Thông báo ra ngoài. Hỏng thì ghi log và đi tiếp — không làm đổ pipeline."""
+        if event not in self.notify_events:
+            return
+        sent = self.notifier.send(Notice(event=event, title=title, body=body,
+                                         url=url or ticket.url))
+        ctx.emit("notify.sent" if sent else "notify.skipped",
+                 level="info" if sent else "debug", channel_event=event,
+                 configured=getattr(self.notifier, "configured", False))
+
     def _finalize(self, ticket: Ticket, ctx: RunContext, skip_label: bool = False) -> None:
         if not skip_label:
             label = LABEL[ctx.outcome or Reason.ERROR]
@@ -120,10 +139,30 @@ class Orchestrator:
                 self.tracker.set_state(ticket.parent, label)
                 self.tracker.comment(ticket.parent,
                                      f"Ticket chi tiết **{ticket.id}** kết thúc: `{ctx.outcome.value}`.")
-        if ctx.outcome not in (Reason.OK,):
-            from ..core.reasons import explain
+        from ..core.reasons import explain
+        if ctx.outcome is not Reason.OK:
             self.tracker.comment(ticket.id, f"**{ctx.outcome.value}** — {explain(ctx.outcome)}\n\n"
                                             f"Log: `{ctx.run_dir}`")
+            event = NEEDS_HUMAN if LABEL[ctx.outcome] == L.NEEDS_HUMAN else NO_MR
+            self._announce(ctx, event, f"{ctx.outcome.value} — {ticket.id}", ticket,
+                           f"**{ticket.title}**\n\n{explain(ctx.outcome)}")
+        elif ctx.phase == "B":
+            self._announce(ctx, MR_CREATED, f"MR đã mở — {ticket.id}", ticket,
+                           f"**{ticket.title}**\n\nGate PASS và anti-gaming PASS, chờ review.",
+                           url=self._last_mr(ctx) or ticket.url)
+
+    def _last_mr(self, ctx: RunContext) -> str:
+        import json
+        path = ctx.run_dir / "outcome.json"
+        for line in (ctx.run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines() \
+                if (ctx.run_dir / "events.jsonl").is_file() else []:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("event") == "mr.created":
+                return (event.get("data") or {}).get("url", "")
+        return ""
 
     def _last_plan(self, ticket: Ticket) -> str:
         path = self.runs_root / ticket.id
