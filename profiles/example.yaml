@@ -1,0 +1,75 @@
+# Hồ sơ repo MẪU. Đây là file DUY NHẤT phải sửa khi đưa hệ thống sang repo mới.
+# Không có gì trong src/ được biết nội dung file này.
+repo_id: example-python
+base_branch: main
+pilot_type: infrastructure
+
+allowed_paths:
+  - "src/**"
+  - "tests/**"
+forbidden_paths:
+  - "prompts/**"
+  - "pyproject.toml"
+  - "**/.gitlab-ci.yml"
+  - "**/.github/workflows/**"
+
+test_globs:
+  - "tests/**"
+  - "**/test_*.py"
+  - "**/*_test.py"
+
+commands:
+  # {junit} và {coverage_json} được thay bằng đường dẫn thật lúc chạy.
+  test: "python -m pytest -q --junitxml={junit} -o junit_family=xunit1"
+  lint: "ruff check ."
+  coverage: "python -m pytest -q --cov=src --cov-report=json:{coverage_json}"
+
+checks:
+  build:       {status: out_of_scope, reason: "Python thuần, không có bước build riêng"}
+  test:        {status: available}
+  lint:        {status: available}
+  typecheck:   {status: out_of_scope, reason: "repo chưa có cấu hình mypy; thêm vào sẽ đẻ ra lỗi sẵn có làm hỏng baseline"}
+  secret_scan: {status: out_of_scope, reason: "chưa cài gitleaks trong image CI"}
+  sast:        {status: out_of_scope, reason: "chưa cài semgrep trong image CI"}
+
+limits:
+  gate_fix_rounds: 2
+  same_error_limit: 3
+  same_file_edit_limit: 6
+  flaky_rerun: 3
+  run_timeout_min: 60
+  run_cost_cap_usd: 15
+  cmd_timeout_sec: 900
+  coverage_new_line_pct: 80
+
+conventions:
+  ac_marker: "pytest.mark.ac"
+
+mutation:
+  enabled: false        # bật cho T2 (quyết định C1)
+  max_mutants: 20
+  timeout_sec: 300
+  min_kill_pct: 70
+
+# TICKET nằm ở đâu. KHÔNG khai khối này thì mặc định kind: file — backlog chỉ là
+# thư mục YAML trên đĩa, sẽ không có gì chạm tới hệ thống thật.
+tracker:
+  kind: backlog                    # backlog (Nulab) | gitlab (issues) | file (offline)
+  space: testagent.backlog.com
+  project: "831684"                # projectKey (vd ABC) hoặc id dạng số
+  api_key_env: backlog_api_key     # tên biến môi trường hoặc khoá trong .env
+  # Trạng thái agent biểu diễn bằng CATEGORY của Backlog (chuỗi tự do, nhiều giá trị).
+  # Chạy `e2ea labels-init` để tạo sẵn 9 category.
+
+# CODE nằm ở đâu — tách hẳn khỏi tracker vì ticket và code là hai hệ khác nhau.
+forge:
+  kind: gitlab                     # gitlab | file (offline)
+  url: https://git.hblab.vn
+  project: nhom/ten-repo
+  token_env: gitlab_token          # cần vai trò Developer trở lên để push nhánh và mở MR
+
+agent:
+  binary: claude
+  permission_mode: acceptEdits
+  allowed_tools: "Read,Write,Edit,Glob,Grep,Bash"
+  timeout_sec: 1800

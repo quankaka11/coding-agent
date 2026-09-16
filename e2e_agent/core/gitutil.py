@@ -1,0 +1,74 @@
+"""Git — chỉ những thao tác đọc mà gate/anti-gaming cần."""
+from __future__ import annotations
+
+import re
+import subprocess
+from pathlib import Path
+
+_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+
+def _git(repo: Path, *args: str) -> str:
+    proc = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)}: {proc.stderr.strip()}")
+    return proc.stdout
+
+
+def head_sha(repo: Path) -> str:
+    return _git(repo, "rev-parse", "HEAD").strip()
+
+
+def is_dirty(repo: Path) -> bool:
+    """Chỉ tính thay đổi trên file đang theo dõi.
+
+    File chưa theo dõi (artefact của test, coverage.json…) không nằm trong commit
+    lẫn trong diff được review, nên không phải thứ G-5 muốn bắt.
+    """
+    return bool(_git(repo, "status", "--porcelain", "--untracked-files=no").strip())
+
+
+def changed_files(repo: Path, base: str, head: str = "HEAD") -> list[str]:
+    out = _git(repo, "diff", "--name-only", f"{base}..{head}")
+    return [line for line in out.splitlines() if line]
+
+
+def new_lines(repo: Path, base: str, head: str = "HEAD") -> dict[str, set[int]]:
+    """{file: {số dòng được thêm}} — dùng cho G-7 và mutation."""
+    out = _git(repo, "diff", "-U0", f"{base}..{head}")
+    result: dict[str, set[int]] = {}
+    current: str | None = None
+    lineno = 0
+    for line in out.splitlines():
+        if line.startswith("+++ b/"):
+            current = line[6:]
+            result.setdefault(current, set())
+        elif (m := _HUNK.match(line)) and current:
+            lineno = int(m.group(1))
+        elif line.startswith("+") and not line.startswith("+++") and current:
+            result[current].add(lineno)
+            lineno += 1
+    return {f: lines for f, lines in result.items() if lines}
+
+
+def added_lines_text(repo: Path, base: str, head: str = "HEAD") -> list[tuple[str, int, str]]:
+    """[(file, số dòng, nội dung)] của các dòng được thêm — dùng cho G-2."""
+    out = _git(repo, "diff", "-U0", f"{base}..{head}")
+    rows: list[tuple[str, int, str]] = []
+    current, lineno = None, 0
+    for line in out.splitlines():
+        if line.startswith("+++ b/"):
+            current = line[6:]
+        elif m := _HUNK.match(line):
+            lineno = int(m.group(1))
+        elif line.startswith("+") and not line.startswith("+++") and current:
+            rows.append((current, lineno, line[1:]))
+            lineno += 1
+    return rows
+
+
+def file_at(repo: Path, ref: str, path: str) -> str | None:
+    try:
+        return _git(repo, "show", f"{ref}:{path}")
+    except RuntimeError:
+        return None

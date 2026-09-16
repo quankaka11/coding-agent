@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "e2e-agent"
+version = "0.3.0"
+description = "Lớp cưỡng chế cho E2E Coding Agent: baseline, gate, anti-gaming"
+requires-python = ">=3.10"
+dependencies = ["PyYAML>=6"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+e2ea = "e2e_agent.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["e2e_agent*"]
+
+[tool.setuptools.package-data]
+e2e_agent = ["skills/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["ac(id): acceptance criteria mà test này kiểm (quy ước C2)"]

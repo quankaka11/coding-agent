@@ -1,0 +1,124 @@
+# E2E Coding Agent — lớp cưỡng chế
+
+Phần "phán quyết" của hệ thống: baseline, gate, anti-gaming. Đây là code có exit
+code, không phải prompt — agent không đọc, không sửa, không tự chấm được
+(nguyên tắc R-6 trong [docs/e2e-coding-agent-implementation-plan.md](docs/e2e-coding-agent-implementation-plan.md)).
+
+Lớp "phán đoán" (Intake / Discovery / Planning / Test-gen / Implement) là skill của
+Claude Code headless, nằm ở `skills/`.
+
+**Hướng dẫn chạy full luồng: [docs/HUONG-DAN-SU-DUNG.md](docs/HUONG-DAN-SU-DUNG.md).**
+
+```
+e2e_agent/
+  core/      log, vòng chạy, mã kết cục, git, parser
+  config/    hồ sơ repo
+  enforce/   baseline, gate, anti-gaming, mutation   ← có exit code
+  tracker/   nơi chứa TICKET: backlog (Nulab) · gitlab issues · file
+  forge/     nơi chứa CODE: gitlab (push nhánh + MR) · file
+  agent/     gọi Claude Code headless, schema spec
+  pipeline/  sandbox, Phase A, Phase B, orchestrator
+  skills/    5 skill cho agent (đi kèm trong gói)
+  hooks/     PreToolUse hook chặn forbidden_paths
+```
+
+## Cài
+
+```bash
+pip install -e ".[dev]"     # hoặc: PYTHONPATH=src python3 -m e2e_agent.cli
+```
+
+## Dùng
+
+```bash
+e2ea doctor       --profile p.yaml --repo R      # soát hồ sơ với repo thật
+e2ea labels-init  --profile p.yaml --repo R      # tạo label trên tracker
+
+e2ea phase-a  --profile p.yaml --repo R --ticket 42     # Intake → Discovery → Planning
+e2ea approve  --profile p.yaml --repo R --ticket 42     # người duyệt → tạo ticket chi tiết
+e2ea reject   --profile p.yaml --repo R --ticket 42 --why "..."
+e2ea phase-b  --profile p.yaml --repo R --ticket 43     # Baseline → … → MR
+e2ea scan     --profile p.yaml --repo R                 # một vòng quét label
+
+e2ea check    --profile p.yaml --repo R --base-sha <sha>   # gate + anti-gaming (CI dùng)
+e2ea report   --run-dir runs/43/<run_id>
+e2ea tickets  --profile p.yaml --repo R
+e2ea label    --task-id 43 --outcome merged-as-is --test-value real --note "..."
+e2ea metrics
+e2ea reasons
+```
+
+**Exit code là hợp đồng với CI:** `0` đủ điều kiện mở MR · `1` NO_MR · `2` cần người.
+
+## Ticket và code là hai hệ tách rời
+
+`tracker` đọc/ghi **ticket** (Backlog Nulab), `forge` push nhánh và mở **MR** (GitLab).
+Chúng không biết gì về nhau: `tracker` không có khái niệm nhánh/MR, `forge` không có
+khái niệm ticket. Gộp lại là lỗi thiết kế đã phải sửa một lần.
+
+Backlog không có label tự do như GitLab, nên 9 trạng thái agent map sang **category** —
+`e2ea labels-init` tạo sẵn.
+
+## Hồ sơ repo
+
+`profiles/*.yaml` là **file duy nhất** phải sửa khi đưa hệ thống sang repo mới —
+không dòng nào trong `e2e_agent/` biết tên repo, đường dẫn hay lệnh của một dự án cụ thể
+(có test canh: `tests/test_contract.py`). Đặt hồ sơ **ngoài** repo bị soi, nếu không
+G-3 sẽ báo nó nằm ngoài `allowed_paths`.
+
+Hai điều dễ vấp:
+
+- `commands.test` phải chứa `{junit}`. Nên thêm `-o junit_family=xunit1` để junit ghi
+  cả đường dẫn file, nhờ đó phân biệt được lỗi sẵn có trong/ngoài phạm vi sắp sửa (B1).
+- Check nào chưa có tool thì khai `out_of_scope` **kèm lý do**. `doctor` sẽ chặn nếu
+  khai `available` mà không tìm thấy lệnh. Không bao giờ có chuyện im lặng thành `pass`.
+
+## CI đối chứng độc lập
+
+Gate agent tự báo trong sandbox không được tin. Job này chạy lại trên mọi MR:
+
+```yaml
+agent_gate:
+  image: python:3.12
+  variables:
+    E2EA_INDEX: "https://gitlab-ci-token:${CI_JOB_TOKEN}@<host>/api/v4/projects/${CI_PROJECT_ID}/packages/pypi/simple"
+  script:
+    - pip install -q pytest && pip install -q --index-url "$E2EA_INDEX" e2e-agent
+    - e2ea check --profile ci/repo-profile.yaml --repo . --task-id "$CI_MERGE_REQUEST_IID"
+        --base-sha "$CI_MERGE_REQUEST_DIFF_BASE_SHA" --run-dir runs/ci
+        --work-root "$CI_BUILDS_DIR/e2ea-work" --verify-from-base --quiet
+    - e2ea report --run-dir runs/ci --quiet-report
+  artifacts:
+    when: always
+    paths: [runs/ci]
+  rules:
+    - if: $CI_MERGE_REQUEST_LABELS =~ /agent-generated/
+```
+
+`--verify-from-base` là chỗ quan trọng: CI **tự dựng lại** baseline và bằng chứng
+fail-trước từ base commit thay vì đọc file agent nộp. Thiếu cờ này thì G-1 và G-4 —
+đúng hai luật nói nhiều nhất về gian lận — luôn ra `out_of_scope`.
+
+## Hook chặn sớm
+
+`hooks/forbidden_paths.py` là PreToolUse hook: chặn ghi vào `forbidden_paths` ngay
+lúc agent định ghi, thay vì để nó sửa xong rồi mới rớt G-3. Đây là lưới thứ nhất;
+G-3 vẫn chạy sau như lưới thứ hai vì hook không thấy `sed -i` chạy qua Bash.
+
+## Log
+
+Mọi thứ đi qua một nguồn: `runs/<task_id>/<run_id>/events.jsonl` (máy đọc) và
+console (người đọc). Mỗi run kết thúc bằng **đúng một** sự kiện `decision` mang mã
+lý do — không có lối thoát im lặng, và có test canh điều đó. `e2ea report` dựng
+`report.md` từ chính file sự kiện đó.
+
+## Test
+
+```bash
+python3 -m pytest tests/ -q      # 79 test, ~2 phút
+```
+
+Không dùng repo thật: `tests/conftest.py` dựng repo git tí hon ngay lúc chạy, mỗi
+luật G có một fixture **cố tình gian lận** phải bị bắt và một fixture hợp lệ không
+được bắt oan. `tests/test_pipeline.py` chạy trọn vòng ticket → MR bằng agent giả và
+backlog trên đĩa, nên không cần LLM lẫn mạng.
