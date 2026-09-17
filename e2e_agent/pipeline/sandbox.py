@@ -10,22 +10,50 @@ from pathlib import Path
 HOOK_MODULE = "e2e_agent.hooks.forbidden_paths"
 
 
+def under(repo: Path, work_root: Path) -> Path:
+    """Neo work_root vào repo.
+
+    work_root tương đối là tương đối với REPO, không phải với thư mục đang chạy
+    lệnh: `git worktree add` hiểu đường dẫn theo repo, còn subprocess sau đó lại
+    hiểu cwd theo tiến trình. Hai cách hiểu lệch nhau thì worktree nằm một nơi mà
+    gate chạy một nơi khác, và mọi kết luận phía sau đều sai.
+    """
+    return (repo / work_root).resolve()
+
+
 def create(repo: Path, work_root: Path, branch: str, base: str) -> Path:
-    """Dựng worktree mới từ base. Trả về đường dẫn worktree."""
-    work = work_root / branch.replace("/", "_")
+    """Dựng worktree mới từ base. Trả về đường dẫn worktree (tuyệt đối)."""
+    work = under(repo, work_root) / branch.replace("/", "_")
     if work.exists():
         remove(repo, work)
     subprocess.run(["git", "worktree", "add", "-f", "-b", branch, str(work), base],
                    cwd=repo, capture_output=True, text=True, check=True)
-    return work
+    return _assert_worktree(work)
 
 
 def create_detached(repo: Path, work: Path, sha: str) -> Path:
     """Worktree tách rời tại một commit — dùng để dựng lại baseline, không đẻ nhánh."""
+    work = work.resolve()
     if work.exists():
         remove(repo, work)
     subprocess.run(["git", "worktree", "add", "--detach", "-f", str(work), sha],
                    cwd=repo, capture_output=True, text=True, check=True)
+    return _assert_worktree(work)
+
+
+def _assert_worktree(work: Path) -> Path:
+    """Chốt rằng thư mục vừa dựng đúng là gốc của một worktree.
+
+    Nếu đường dẫn bị hiểu lệch, chỗ này thấy toplevel là repo khác (hoặc không
+    phải repo nào) và dừng ngay, thay vì để gate chạy trên thư mục rỗng rồi kết
+    luận "không có test nào".
+    """
+    proc = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=work,
+                          capture_output=True, text=True)
+    top = Path(proc.stdout.strip()).resolve() if proc.returncode == 0 else None
+    if top != work:
+        raise RuntimeError(
+            f"worktree hỏng: {work} không phải gốc worktree (git thấy gốc là {top})")
     return work
 
 

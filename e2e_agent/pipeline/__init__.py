@@ -14,7 +14,8 @@ def verify_from_base(ctx, prof, repo, base_sha, work_root):
     from ..enforce import baseline as baseline_mod
     from . import sandbox
 
-    work = sandbox.create_detached(repo, Path(work_root).resolve() / "verify-base", base_sha)
+    work = sandbox.create_detached(repo, sandbox.under(repo, Path(work_root)) / "verify-base",
+                                   base_sha)
     try:
         with ctx.stage("verify_baseline"):
             base = baseline_mod.capture(ctx, prof, work, strict=False)

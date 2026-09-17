@@ -65,13 +65,26 @@ def capture(ctx: RunContext, prof: Profile, repo: Path, scope: list[str] | None 
 
     seen: list[set[str]] = []
     report = parsers.TestReport()
+    runner_broken = True
     for attempt in range(base.runs):
         junit_path = ctx.run_dir / f"baseline-junit-{attempt}.xml"
-        _run_check(ctx, prof, repo, "test", junit=str(junit_path))
+        status, _ = _run_check(ctx, prof, repo, "test", junit=str(junit_path))
         report = parsers.junit(junit_path)
+        if not (status == "fail" and report.total == 0):
+            runner_broken = False
         seen.append(set(report.failed))
         ctx.emit("baseline.attempt", attempt=attempt + 1, total=report.total,
                  failed=len(report.failed), skipped=len(report.skipped))
+
+    # Lệnh test thoát khác 0 mà không test nào chạy: runner chưa khởi động được
+    # (sai thư mục, thiếu thư viện, không gom được test). Đây KHÔNG phải baseline
+    # đỏ — code chưa hề bị phán xét. Đi tiếp thì bước test-trước sẽ so 0 với 0 rồi
+    # kết luận "không có bug", một kết luận sai xuất phát từ hạ tầng hỏng.
+    if runner_broken and strict:
+        ctx.decide(Reason.ERROR,
+                   "lệnh test không chạy được trên code chưa sửa: thoát khác 0 nhưng không "
+                   "gom được test nào — kiểm lại commands.test trong hồ sơ repo và thư mục chạy",
+                   cwd=str(repo), command=prof.commands.get("test", ""))
 
     base.total, base.skipped = report.total, len(report.skipped)
     base.stable = all(s == seen[0] for s in seen)
