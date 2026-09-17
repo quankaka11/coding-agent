@@ -39,9 +39,11 @@ class Spec:
         keys = READY_KEYS + (T3_READY_KEYS if self.task_type == "T3" else ())
         return [k for k in keys if self.readiness.get(k) != "pass"]
 
+    def dumps(self) -> str:
+        return yaml.safe_dump(asdict(self), allow_unicode=True, sort_keys=False)
+
     def save(self, path: Path) -> None:
-        path.write_text(yaml.safe_dump(asdict(self), allow_unicode=True, sort_keys=False),
-                        encoding="utf-8")
+        path.write_text(self.dumps(), encoding="utf-8")
 
 
 def parse(text: str) -> Spec:

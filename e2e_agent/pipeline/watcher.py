@@ -22,10 +22,13 @@ class Watcher:
     runs_root: Path = Path("runs")
     log_level: str = "info"
     console: bool = True
+    #: Bao nhiêu lần một ticket được phép kết thúc ERROR trước khi giao cho người.
+    max_attempts: int = 3
 
     def __post_init__(self) -> None:
         self.log = EventLog(self.runs_root / "watch" / "events.jsonl", self.log_level, self.console)
         self._stop = False
+        self._fails: dict[str, int] = {}
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
                 signal.signal(sig, self._handle_signal)
@@ -58,6 +61,7 @@ class Watcher:
                 for ticket_id, outcome in done:
                     handled += 1
                     self.log.emit("watch.handled", cycle=cycle, ticket=ticket_id, outcome=outcome)
+                    self._count(ticket_id, outcome)
                 if not done:
                     self.log.emit("watch.idle", level="debug", cycle=cycle)
                 if self._stop or (max_cycles is not None and cycle >= max_cycles):
@@ -68,6 +72,22 @@ class Watcher:
             self.log.emit("watch.end", cycles=cycle, handled=handled)
             self.log.close()
         return handled
+
+    def _count(self, ticket_id: str, outcome: str) -> None:
+        """ERROR lặp lại trên cùng một ticket là hỏng thật, không phải trục trặc thoáng qua."""
+        if outcome != "ERROR":
+            self._fails.pop(ticket_id, None)
+            return
+        self._fails[ticket_id] = self._fails.get(ticket_id, 0) + 1
+        if self._fails[ticket_id] < self.max_attempts:
+            return
+        why = f"{self._fails[ticket_id]} lần liên tiếp kết thúc ERROR"
+        try:
+            self.orch.give_up(ticket_id, why)
+            self.log.emit("watch.gave_up", level="error", ticket=ticket_id, why=why)
+        except Exception as exc:
+            self.log.emit("watch.error", level="error", ticket=ticket_id,
+                          error=f"không giao lại được cho người: {type(exc).__name__}: {exc}")
 
     def _sleep(self, seconds: int) -> None:
         """Ngủ từng giây để tín hiệu dừng có hiệu lực ngay."""

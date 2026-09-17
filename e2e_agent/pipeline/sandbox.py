@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import shutil
 import subprocess
 import sys
@@ -70,7 +71,7 @@ def install_guardrails(work: Path, profile_path: Path, package_root: Path | None
     """
     claude_dir = work / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
-    command = f"{sys.executable} -m {HOOK_MODULE} --profile {profile_path.resolve()}"
+    command = hook_command(profile_path, package_root)
     settings = {"hooks": {"PreToolUse": [{
         "matcher": "Write|Edit|NotebookEdit",
         "hooks": [{"type": "command", "command": command}]}]}}
@@ -87,6 +88,33 @@ def install_guardrails(work: Path, profile_path: Path, package_root: Path | None
     body = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
     if ".claude/" not in body:
         exclude.write_text(body + "\n.claude/\n", encoding="utf-8")
+
+
+def hook_command(profile_path: Path, package_root: Path | None = None) -> str:
+    """Lệnh hook, có chỉ đường import nếu gói chưa được cài vào interpreter này.
+
+    Hook không import được thì nó thoát mã 1, mà chỉ mã 2 mới chặn tool call —
+    lưới thứ nhất biến mất mà không ai hay. `package_root` trước đây được nhận vào
+    rồi bỏ quên ở đây, chính là chỗ lẽ ra nó phải được dùng.
+    """
+    parts = []
+    if package_root is not None:
+        parts.append(f"PYTHONPATH={shlex.quote(str(Path(package_root).resolve()))}")
+    parts += [shlex.quote(sys.executable), "-m", HOOK_MODULE,
+              "--profile", shlex.quote(str(profile_path.resolve()))]
+    return " ".join(parts)
+
+
+def hook_importable(package_root: Path | None = None) -> bool:
+    """Interpreter sẽ chạy hook có import được gói không — dùng cho doctor."""
+    import os
+    env = dict(os.environ)
+    if package_root is not None:
+        env["PYTHONPATH"] = str(Path(package_root).resolve())
+    proc = subprocess.run([sys.executable, "-c", f"import {HOOK_MODULE}"],
+                          capture_output=True, text=True, env=env,
+                          stdin=subprocess.DEVNULL)
+    return proc.returncode == 0
 
 
 def commit_all(work: Path, message: str) -> str:

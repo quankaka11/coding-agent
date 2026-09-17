@@ -10,7 +10,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from ..core.secrets import read_secret
-from .base import STATE_LABELS, Ticket
+from .base import STATE_LABELS, Ticket, meta as _meta
 
 
 class GitLabError(RuntimeError):
@@ -66,6 +66,11 @@ class GitLabTracker:
     def comment(self, ticket_id: str, body: str) -> None:
         self._call("POST", self._project_path(f"/issues/{ticket_id}/notes"), {"body": body})
 
+    def comments(self, ticket_id: str) -> list[str]:
+        raw = self._call("GET", self._project_path(
+            f"/issues/{ticket_id}/notes?per_page=100&sort=asc&order_by=created_at"))
+        return [n.get("body") or "" for n in raw]
+
     def set_state(self, ticket_id: str, label: str) -> None:
         current = self.get(ticket_id).labels
         keep = [l for l in current if l not in STATE_LABELS]
@@ -103,11 +108,3 @@ class GitLabTracker:
         return {"project": project.get("path_with_namespace"),
                 "default_branch": project.get("default_branch"),
                 "access_level": access.get("access_level")}
-
-
-def _meta(body: str, key: str) -> str | None:
-    marker = f"<!-- {key}: "
-    if marker not in body:
-        return None
-    return body.split(marker, 1)[1].split("-->", 1)[0].strip()
-

@@ -43,10 +43,17 @@ class GitLabForge:
             raise GitLabError(f"{method} {path} → {exc.code}: {detail}{hint}") from None
 
     def push_branch(self, repo: Path, branch: str) -> None:
+        """Push nhánh mới. KHÔNG force.
+
+        Mỗi run dùng một tên nhánh riêng nên không có gì để ghi đè. `--force-with-lease`
+        trên URL thô còn hỏng theo hướng khác: không có remote-tracking ref thì lease
+        rỗng, git từ chối ngay lần thứ hai với `stale info`.
+        """
         host = self.url.split("://", 1)[-1]
         remote = f"https://oauth2:{self.token}@{host}/{self.project_path}.git"
-        proc = subprocess.run(["git", "push", "--force-with-lease", remote, f"HEAD:{branch}"],
-                              cwd=repo, capture_output=True, text=True)
+        proc = subprocess.run(["git", "push", remote, f"HEAD:{branch}"],
+                              cwd=repo, capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL)
         if proc.returncode != 0:
             raise GitLabError(f"push nhánh {branch} thất bại: {scrub(proc.stderr, self.token)}")
 

@@ -15,6 +15,15 @@ Bạn đang chạy trong một tiến trình riêng và **không được thấy
 - Với task T3, mỗi acceptance criteria phải có ít nhất một test và đánh dấu
   `@pytest.mark.ac("AC-x")`.
 
+## Với task loại T2 (viết test bù cho code đã đúng)
+
+Test của bạn sẽ **pass ngay** — đó là điều đúng, đừng cố làm nó đỏ. Bù lại, hệ thống
+sẽ đổi ngược vài dòng code mà test của bạn đi qua và đòi test phải đỏ lên vì thay đổi
+đó. Test chỉ gọi hàm rồi khẳng định "không None" sẽ không qua được.
+
 ## Đầu ra
 
 Ghi thẳng file test vào repo, rồi in ra danh sách test đã viết và test nào kiểm AC nào.
+
+Sau bước này file test được commit và **đóng băng**: bước sửa code không được đổi
+một dòng nào trong đó. Viết cho chắc ngay từ đầu.

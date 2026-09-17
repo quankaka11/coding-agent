@@ -9,17 +9,25 @@ from typing import Any
 import yaml
 
 CHECKS = ("build", "test", "lint", "typecheck", "secret_scan", "sast")
+#: Khai được nhưng không bắt buộc khai — thiếu thì luật dùng tới nó ghi out_of_scope.
+OPTIONAL_CHECKS = ("coverage",)
+ALL_CHECKS = CHECKS + OPTIONAL_CHECKS
 STATUSES = ("available", "out_of_scope")
+#: Nơi lệnh coverage phải ghi kết quả, và nơi G-7 đọc. Một quy ước duy nhất.
+COVERAGE_FILE = "coverage.json"
 _TOP = {"repo_id", "base_branch", "pilot_type", "allowed_paths", "forbidden_paths",
         "test_globs", "commands", "checks", "limits", "conventions", "mutation",
         "tracker", "forge", "agent", "notify"}
 
 DEFAULT_LIMITS = {
-    "gate_fix_rounds": 2, "same_error_limit": 3, "same_file_edit_limit": 6,
+    "gate_fix_rounds": 2, "same_error_limit": 3,
     "flaky_rerun": 3, "run_timeout_min": 60, "run_cost_cap_usd": 15,
     "cmd_timeout_sec": 900, "coverage_new_line_pct": 80,
 }
-DEFAULT_MUTATION = {"enabled": False, "max_mutants": 20, "timeout_sec": 300, "min_kill_pct": 70}
+#: `timeout_sec` là trần cho CẢ bước mutation; `per_mutant_timeout_sec` là trần cho
+#: một lần chạy test. Dùng chung một số thì một mutant chậm nuốt trọn ngân sách.
+DEFAULT_MUTATION = {"enabled": False, "max_mutants": 20, "timeout_sec": 300,
+                    "per_mutant_timeout_sec": 120, "min_kill_pct": 70}
 DEFAULT_TRACKER = {"kind": "file", "root": "backlog", "url": "", "project": "",
                    "token_env": "GITLAB_TOKEN", "space": "", "api_key_env": "BACKLOG_API_KEY",
                    "issue_type_id": None}
@@ -101,7 +109,7 @@ def load(path: str | Path) -> Profile:
 def _validate(p: Profile) -> None:
     errs: list[str] = []
     for name, spec in p.checks.items():
-        if name not in CHECKS:
+        if name not in ALL_CHECKS:
             errs.append(f"check lạ: {name}")
         elif not isinstance(spec, dict) or spec.get("status") not in STATUSES:
             errs.append(f"check {name}: status phải là một trong {STATUSES}")
@@ -144,10 +152,17 @@ def _validate(p: Profile) -> None:
         raise ProfileError(f"{p.source}:\n  - " + "\n  - ".join(errs))
 
 
-def doctor(p: Profile, repo: Path) -> list[tuple[str, bool, str]]:
+def doctor(p: Profile, repo: Path, package_root: Path | None = None) -> list[tuple[str, bool, str]]:
     """Soát hồ sơ với repo thật. Trả về [(mục, đạt, ghi chú)] — không raise."""
     out: list[tuple[str, bool, str]] = []
     out.append(("repo là git repo", (repo / ".git").exists(), str(repo)))
+
+    from ..pipeline.sandbox import hook_importable
+    ok = hook_importable(package_root)
+    out.append(("hook chặn file cấm import được", ok,
+                "sẽ chặn thật" if ok else
+                "interpreter chạy hook không import được e2e_agent — hook sẽ thoát mã 1 "
+                "và KHÔNG chặn gì cả; cài gói hoặc chạy e2ea từ thư mục chứa gói"))
 
     for pattern in p.allowed_paths:
         hits = list(repo.glob(pattern))
@@ -183,9 +198,13 @@ def doctor(p: Profile, repo: Path) -> list[tuple[str, bool, str]]:
                     "thiếu placeholder {junit} — không phân loại được test fail theo tên"))
     else:
         out.append(("commands.test có {junit}", True, "ok"))
-    if p.is_available("coverage" if "coverage" in p.checks else "test") and "coverage" in p.commands:
-        out.append(("commands.coverage có {coverage_json}", "{coverage_json}" in p.commands["coverage"],
-                    p.commands["coverage"]))
+    if p.is_available("coverage"):
+        out.append(("commands.coverage có {coverage_json}",
+                    "{coverage_json}" in p.commands.get("coverage", ""),
+                    p.commands.get("coverage", "chưa khai commands.coverage")))
+    else:
+        out.append(("check coverage", True,
+                    f"out_of_scope — {p.reason('coverage')}; G-7 sẽ không chấm"))
     return out
 
 

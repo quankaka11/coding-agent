@@ -17,6 +17,12 @@ class TestReport:
     failed: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     files: dict[str, str] = field(default_factory=dict)  # test id -> file
+    #: Tập con của `failed`: những mục có <error> chứ không phải <failure>.
+    #: JUnit phân biệt rõ "không chạy được" (import hỏng, cú pháp sai, fixture nổ)
+    #: với "chạy rồi và khẳng định sai". Hai thứ này nói về hai loại lỗi khác hẳn
+    #: nhau, mà gộp lại thì không còn phân biệt được lỗi của người viết test với
+    #: lỗi của người viết code.
+    errored: list[str] = field(default_factory=list)
 
     @property
     def passed(self) -> int:
@@ -38,6 +44,8 @@ def junit(path: Path) -> TestReport:
         rep.files[test_id] = case.get("file") or classname.replace(".", "/")
         if case.find("failure") is not None or case.find("error") is not None:
             rep.failed.append(test_id)
+            if case.find("error") is not None:
+                rep.errored.append(test_id)
         elif case.find("skipped") is not None:
             rep.skipped.append(test_id)
     return rep

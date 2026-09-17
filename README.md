@@ -43,7 +43,8 @@ e2ea phase-b  --profile p.yaml --repo R --ticket 43     # Baseline → … → M
 e2ea watch    --profile p.yaml --repo R --interval 60   # VÒNG TỰ ĐỘNG: quét → xử lý → lặp
 e2ea scan     --profile p.yaml --repo R                 # một vòng rồi thoát (cho cron)
 
-e2ea check    --profile p.yaml --repo R --base-sha <sha>   # gate + anti-gaming (CI dùng)
+e2ea check    --profile p.yaml --repo R --base-sha <sha> \
+              --modules src/cart.py                       # gate + anti-gaming (CI dùng)
 e2ea report   --run-dir runs/43/<run_id>
 e2ea tickets  --profile p.yaml --repo R
 e2ea label    --task-id 43 --outcome merged-as-is --test-value real --note "..."
@@ -52,6 +53,19 @@ e2ea reasons
 ```
 
 **Exit code là hợp đồng với CI:** `0` đủ điều kiện mở MR · `1` NO_MR · `2` cần người.
+
+## Hai hợp đồng mà agent không được phá
+
+**Test là hợp đồng (G-9).** Bước test-gen viết test, hệ thống commit lại và ghi mốc
+đó vào `evidence.json`. Từ mốc ấy, mọi thay đổi trong `test_globs` đều là vi phạm —
+kể cả khi code cuối cùng đúng. Không có luật này thì đổi `assert total == 93.6` thành
+`assert True` là qua được hết: số test không giảm (G-1), vẫn có câu assert (G-6), và
+bằng chứng fail-trước đã ghi từ trước khi test bị sửa (G-4).
+
+**Plan là hợp đồng (G-10).** Chỉ được đụng `scope.modules` mà người đã duyệt. G-3 so
+với `allowed_paths` của cả repo, rộng hơn một plan rất nhiều. Phạm vi lấy từ spec YAML
+chứ không parse mục "File sẽ đụng" trong markdown — spec là dữ liệu có cấu trúc.
+Tắt được bằng `conventions.enforce_plan_scope: false` nếu Intake hay khai phạm vi quá hẹp.
 
 ## Ticket và code là hai hệ tách rời
 
@@ -118,7 +132,7 @@ lý do — không có lối thoát im lặng, và có test canh điều đó. `e
 ## Test
 
 ```bash
-python3 -m pytest tests/ -q      # 79 test, ~2 phút
+python3 -m pytest tests/ -q      # 130 test, ~3 phút
 ```
 
 Không dùng repo thật: `tests/conftest.py` dựng repo git tí hon ngay lúc chạy, mỗi

@@ -37,7 +37,7 @@ def _common(p: argparse.ArgumentParser) -> None:
 def cmd_doctor(args) -> int:
     prof = profile_mod.load(args.profile)
     repo = Path(args.repo).resolve()
-    rows = profile_mod.doctor(prof, repo)
+    rows = profile_mod.doctor(prof, repo, PACKAGE_ROOT)
     missing = gate_mod.assert_all_declared(prof)
     width = max(len(r[0]) for r in rows)
     failed = 0
@@ -89,7 +89,7 @@ def cmd_antigaming(args) -> int:
             _merge_evidence(ctx, {"mutation": result})
         with ctx.stage("antigaming"):
             rep = antigaming.run(ctx, prof, repo, base_sha, base, task_type=args.task_type,
-                                 acceptance_ids=args.ac or [])
+                                 acceptance_ids=args.ac or [], modules=args.modules or [])
         if rep["verdict"] == "FAIL":
             ctx.decide(Reason.HUMAN_ANTIGAMING, f"vi phạm: {', '.join(rep['failed_rules'])}")
         ctx.decide(Reason.OK, "anti-gaming PASS")
@@ -114,7 +114,8 @@ def cmd_check(args) -> int:
                 _merge_evidence(ctx, {"mutation": mutation.run(ctx, prof, repo, base_sha)})
         with ctx.stage("antigaming"):
             ag = antigaming.run(ctx, prof, repo, base_sha, base, rep,
-                                task_type=args.task_type, acceptance_ids=args.ac or [])
+                                task_type=args.task_type, acceptance_ids=args.ac or [],
+                                modules=args.modules or [])
         if ag["verdict"] == "FAIL":
             ctx.decide(Reason.HUMAN_ANTIGAMING, f"vi phạm: {', '.join(ag['failed_rules'])}")
         if rep["verdict"] == "FAIL":
@@ -326,6 +327,7 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--base-sha")
     a.add_argument("--task-type", default="T1", choices=("T1", "T2", "T3"))
     a.add_argument("--ac", nargs="*", help="danh sách id acceptance criteria (T3)")
+    a.add_argument("--modules", nargs="*", help="phạm vi plan đã duyệt (spec.scope.modules) cho G-10")
     a.add_argument("--mutation", action="store_true", help="chạy mutation check trước")
     a.set_defaults(func=cmd_antigaming)
 
@@ -335,6 +337,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--base-sha")
     c.add_argument("--task-type", default="T1", choices=("T1", "T2", "T3"))
     c.add_argument("--ac", nargs="*")
+    c.add_argument("--modules", nargs="*", help="phạm vi plan đã duyệt (spec.scope.modules) cho G-10")
     c.add_argument("--mutation", action="store_true")
     c.add_argument("--work-root", default=str(WORK_DIR))
     c.add_argument("--verify-from-base", action="store_true",

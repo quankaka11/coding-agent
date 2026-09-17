@@ -30,12 +30,12 @@ checks:
   lint:        {status: available}
   typecheck:   {status: out_of_scope, reason: "repo chưa có cấu hình mypy; thêm vào sẽ đẻ ra lỗi sẵn có làm hỏng baseline"}
   secret_scan: {status: out_of_scope, reason: "chưa cài gitleaks trong image CI"}
+  coverage:    {status: out_of_scope, reason: "chưa cài pytest-cov trong môi trường chạy; bật lên thì G-7 mới chấm và task T2 mới chạy được"}
   sast:        {status: out_of_scope, reason: "chưa cài semgrep trong image CI"}
 
 limits:
   gate_fix_rounds: 2
   same_error_limit: 3
-  same_file_edit_limit: 6
   flaky_rerun: 3
   run_timeout_min: 60
   run_cost_cap_usd: 15

@@ -11,7 +11,7 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from .log import EventLog, tail
 from .reasons import LABEL, Reason, explain
@@ -63,6 +63,7 @@ class RunContext:
         self.outcome: Reason | None = None
         self.outcome_label: str | None = None
         self.outcome_why: str = ""
+        self._finish_hooks: list[Callable[["RunContext"], None]] = []
 
     # -- sự kiện ---------------------------------------------------------
     def emit(self, event: str, level: str = "info", **data: Any) -> None:
@@ -83,12 +84,20 @@ class RunContext:
     # -- lệnh ------------------------------------------------------------
     def cmd(self, argv: list[str] | str, cwd: Path, timeout: int = 900,
             env: dict[str, str] | None = None) -> CmdResult:
+        """Chạy một lệnh. stdin LUÔN là /dev/null.
+
+        Tiến trình con kế thừa stdin của cha nếu không nói gì. Dưới nohup/systemd/
+        cron, stdin có thể là pipe còn mở, và `claude -p` chờ EOF trên stdin khi
+        stdin không phải TTY — nó sẽ treo tới hết timeout rồi báo ERROR. Đóng sẵn
+        stdin cũng đúng cho lệnh test: không lệnh nào trong gate được phép hỏi người.
+        """
         shell = isinstance(argv, str)
         t0 = time.monotonic()
         timed_out = False
         try:
             proc = subprocess.run(argv, cwd=cwd, shell=shell, capture_output=True,
-                                  text=True, timeout=timeout, env=env)
+                                  text=True, timeout=timeout, env=env,
+                                  stdin=subprocess.DEVNULL)
             code, out, err = proc.returncode, proc.stdout or "", proc.stderr or ""
         except subprocess.TimeoutExpired as exc:
             timed_out = True
@@ -134,6 +143,15 @@ class RunContext:
                   why=why, meaning=explain(reason), **data)
         raise Decided(reason, why)
 
+    def on_finish(self, hook: Callable[["RunContext"], None]) -> None:
+        """Đăng ký việc phải làm SAU khi chốt kết cục mà TRƯỚC khi đóng log.
+
+        Đặt ngoài `with` thì `events.jsonl` đã đóng, mọi emit sau đó chỉ còn ra
+        console — cập nhật nhãn ticket và gửi thông báo sẽ không để lại dấu vết
+        nào, trong khi metric chỉ đọc từ `events.jsonl`.
+        """
+        self._finish_hooks.append(hook)
+
     def finish(self) -> Reason:
         if self.outcome is None:
             self.outcome = Reason.ERROR
@@ -141,6 +159,14 @@ class RunContext:
             self.outcome_why = "run kết thúc mà không chốt kết cục (vi phạm N-3)"
             self.emit("decision", level="error", reason=Reason.ERROR.value,
                       label=self.outcome_label, why="run kết thúc mà không chốt kết cục (vi phạm N-3)")
+        for hook in self._finish_hooks:
+            # Hook hỏng không được cướp mất run.end: mất dòng đó là mất luôn run
+            # khỏi mọi thống kê.
+            try:
+                hook(self)
+            except Exception as exc:
+                self.emit("finish_hook.error", level="error",
+                          error=f"{type(exc).__name__}: {exc}")
         elapsed = int((time.monotonic() - self.started) * 1000)
         label = self.outcome_label or LABEL[self.outcome]
         self.emit("run.end", reason=self.outcome.value, label=label,

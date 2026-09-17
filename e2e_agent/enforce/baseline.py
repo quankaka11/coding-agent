@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from ..core import gitutil, parsers
-from ..config.profile import Profile
+from ..config.profile import COVERAGE_FILE, Profile
 from ..core.reasons import Reason
 from ..core.run import RunContext
 
@@ -92,7 +92,7 @@ def capture(ctx: RunContext, prof: Profile, repo: Path, scope: list[str] | None 
 
     if not base.stable and strict:
         unstable = sorted(set.union(*seen) - set.intersection(*seen))
-        ctx.decide(Reason.NOMR_BASELINE_RED,
+        ctx.decide(Reason.HUMAN_FLAKY,
                    "test fail không tái lập ổn định — không phân biệt được lỗi sẵn có với lỗi agent",
                    unstable_tests=unstable[:10])
 
@@ -110,10 +110,29 @@ def capture(ctx: RunContext, prof: Profile, repo: Path, scope: list[str] | None 
         ctx.emit("baseline.pre_existing", level="warn", count=len(base.failed_tests),
                  tests=base.failed_tests[:10], note="ngoài scope nên vẫn chạy tiếp")
 
+    base.coverage_pct = measure_coverage(ctx, prof, repo)
     base.save(ctx.run_dir / "baseline.json")
     ctx.emit("baseline.ready", total=base.total, failed=len(base.failed_tests),
              skipped=base.skipped, stable=base.stable, base_sha=base.base_sha[:8])
     return base
+
+
+def measure_coverage(ctx: RunContext, prof: Profile, repo: Path) -> float | None:
+    """Chạy lệnh coverage của hồ sơ và trả về % toàn repo.
+
+    Không khai thì trả None và G-7 ghi out_of_scope — đúng luật "không chạy được
+    thì nói là không chạy được, đừng ghi pass".
+    """
+    if not prof.is_available("coverage"):
+        return None
+    path = repo / COVERAGE_FILE
+    cmd = prof.commands["coverage"].format(coverage_json=str(path),
+                                           junit=str(ctx.run_dir / "coverage-junit.xml"))
+    res = ctx.cmd(cmd, cwd=repo, timeout=prof.limit("cmd_timeout_sec"))
+    cov = parsers.coverage_json(path)
+    ctx.emit("coverage.measured", total_pct=cov.total_pct if cov else None,
+             exit_code=res.exit_code, level="info" if cov else "warn")
+    return cov.total_pct if cov else None
 
 
 def _in_scope(test_file: str, scope: list[str]) -> bool:

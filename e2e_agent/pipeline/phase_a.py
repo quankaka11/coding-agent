@@ -16,12 +16,20 @@ from ..tracker.base import Ticket
 SKILLS = Path(__file__).resolve().parents[1] / "skills"
 
 
-def run(ctx: RunContext, prof: Profile, repo: Path, ticket: Ticket, agent) -> dict:
-    """Trả về {spec, plan, discovery}. Tự decide() và thoát nếu không đi tiếp được."""
+def run(ctx: RunContext, prof: Profile, repo: Path, ticket: Ticket, agent,
+        rejections: list[str] | None = None) -> dict:
+    """Trả về {spec, plan, discovery}. Tự decide() và thoát nếu không đi tiếp được.
+
+    `rejections` là lý do người đã bác các plan trước. Không đưa vào prompt thì
+    agent lập lại đúng cái plan vừa bị bác, và vòng từ chối thành vòng luẩn quẩn.
+    """
     ctx.phase = "A"
+    rejected_block = _rejected_block(rejections)
+    if rejections:
+        ctx.emit("planning.rejections", count=len(rejections))
 
     with ctx.stage("intake"):
-        prompt = _skill("intake") + _ticket_block(ticket)
+        prompt = _skill("intake") + _ticket_block(ticket) + rejected_block
         result = _ask(ctx, agent, repo, "intake", prompt)
         spec = _parse_spec(ctx, agent, repo, result, ticket, prompt)
         ctx.emit("intake.spec", task_type=spec.task_type, ac=len(spec.acceptance_criteria),
@@ -44,7 +52,8 @@ def run(ctx: RunContext, prof: Profile, repo: Path, ticket: Ticket, agent) -> di
         prompt = (_skill("planning") + _spec_block(spec)
                   + f"\n## Kết quả discovery\n\n{discovery}\n"
                   + f"\n## Ràng buộc đường dẫn\n\nallowed_paths: {prof.allowed_paths}\n"
-                    f"forbidden_paths: {prof.forbidden_paths}\n")
+                    f"forbidden_paths: {prof.forbidden_paths}\n"
+                  + rejected_block)
         result = _ask(ctx, agent, repo, "planning", prompt)
         plan = result.text
         (ctx.run_dir / "plan.md").write_text(plan, encoding="utf-8")
@@ -87,6 +96,16 @@ def _parse_spec(ctx: RunContext, agent, repo: Path, result: AgentResult, ticket:
 
 def _skill(name: str) -> str:
     return (SKILLS / f"{name}.md").read_text(encoding="utf-8") + "\n\n---\n\n"
+
+
+def _rejected_block(rejections: list[str] | None) -> str:
+    if not rejections:
+        return ""
+    lines = "\n".join(f"{i}. {why}" for i, why in enumerate(rejections, 1))
+    return ("\n## Plan trước đã bị người duyệt từ chối\n\n"
+            f"{lines}\n\nLập plan khác hẳn, đừng lặp lại hướng đã bị bác. "
+            "Nếu lý do từ chối cho thấy ticket còn thiếu thông tin, hãy nói thẳng "
+            "điều đó trong plan thay vì đoán.\n")
 
 
 def _ticket_block(ticket: Ticket) -> str:

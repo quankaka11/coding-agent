@@ -11,14 +11,16 @@ class Reason(str, Enum):
     NOMR_PLAN_REJECTED = "NOMR_PLAN_REJECTED"
     NOMR_BASELINE_RED = "NOMR_BASELINE_RED"
     NOMR_TEST_PASSES_PRE = "NOMR_TEST_PASSES_PRE"
+    NOMR_TESTGEN_BROKEN = "NOMR_TESTGEN_BROKEN"
     NOMR_GATE_FAIL = "NOMR_GATE_FAIL"
     NOMR_LOOP_LIMIT = "NOMR_LOOP_LIMIT"
     HUMAN_TICKET_MISROUTED = "HUMAN_TICKET_MISROUTED"
+    HUMAN_T2_FOUND_BUG = "HUMAN_T2_FOUND_BUG"
+    HUMAN_PROFILE_GAP = "HUMAN_PROFILE_GAP"
     HUMAN_ANTIGAMING = "HUMAN_ANTIGAMING"
     HUMAN_FLAKY = "HUMAN_FLAKY"
     HUMAN_BUDGET = "HUMAN_BUDGET"
     HUMAN_PLAN_STALE = "HUMAN_PLAN_STALE"
-    HUMAN_CI_MISMATCH = "HUMAN_CI_MISMATCH"
     ERROR = "ERROR"
 
 
@@ -30,17 +32,25 @@ EXPLAIN: dict[Reason, str] = {
     Reason.NOMR_PLAN_REJECTED: "Plan bị từ chối quá 2 lần.",
     Reason.NOMR_BASELINE_RED: "Baseline không sạch nên không phân biệt được lỗi sẵn có với lỗi agent gây ra.",
     Reason.NOMR_TEST_PASSES_PRE: "Test viết trước đã pass trên code chưa sửa — không có bug xác định để sửa.",
+    Reason.NOMR_TESTGEN_BROKEN: (
+        "Test vừa viết làm hỏng bước thu thập test (sai import, sai cú pháp), nên "
+        "không thể kết luận gì về code. Lỗi nằm ở bước viết test, không phải ở bước sửa code."),
     Reason.NOMR_GATE_FAIL: "Gate vẫn fail sau số vòng tự sửa cho phép.",
     Reason.NOMR_LOOP_LIMIT: "Vòng implement chạm trần lặp.",
     Reason.HUMAN_TICKET_MISROUTED: (
         "Ticket bị đặt vào trạng thái dành riêng cho ticket do agent sinh ra. "
         "Người chỉ nên đặt `agent:try` để nhờ agent lập plan; `agent:plan-approved` và "
         "`agent:plan-rejected` chỉ dùng trên ticket đã có plan do agent viết."),
+    Reason.HUMAN_T2_FOUND_BUG: (
+        "Task là T2 (viết test cho code đã đúng) nhưng test vừa viết lại đỏ — "
+        "hoặc code có bug thật và ticket nên là T1, hoặc test hiểu sai hành vi mong đợi. "
+        "Cả hai đều cần người quyết, không đoán hộ."),
+    Reason.HUMAN_PROFILE_GAP: (
+        "Hồ sơ repo thiếu thứ mà loại task này bắt buộc phải có để kết luận được."),
     Reason.HUMAN_ANTIGAMING: "Anti-gaming bắt được vi phạm. KHÔNG cho agent tự sửa — giữ nguyên hiện trường cho người xem.",
     Reason.HUMAN_FLAKY: "Test không nhất quán giữa các lần chạy.",
     Reason.HUMAN_BUDGET: "Vượt trần thời gian hoặc chi phí.",
     Reason.HUMAN_PLAN_STALE: "Code đã đổi kể từ lúc plan được duyệt.",
-    Reason.HUMAN_CI_MISMATCH: "Gate trong sandbox và gate trên CI cho kết quả khác nhau.",
     Reason.ERROR: "Hệ thống gặp lỗi ngoài dự kiến.",
 }
 

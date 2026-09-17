@@ -101,12 +101,14 @@ class StubAgent:
     def __init__(self, script: dict) -> None:
         self.script = script          # {tên bước: callable(cwd) -> str}
         self.calls: list[str] = []
+        self.prompts: dict[str, str] = {}   # để test soi được cái gì đã vào prompt
 
     def available(self) -> bool:
         return True
 
     def run(self, ctx: RunContext, prompt: str, cwd: Path, name: str) -> AgentResult:
         self.calls.append(name)
+        self.prompts[name] = prompt
         ctx.emit("agent.start", agent=name, cwd=str(cwd), stub=True)
         handler = self.script.get(name) or self.script.get(name.rsplit("-", 1)[0])
         if handler is None:

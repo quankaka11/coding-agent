@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.request
 
 from ..core.secrets import read_secret
-from .base import STATE_LABELS, Ticket
+from .base import STATE_LABELS, Ticket, meta as _meta
 
 
 class BacklogError(RuntimeError):
@@ -108,6 +108,11 @@ class BacklogTracker:
     def comment(self, ticket_id: str, body: str) -> None:
         self._call("POST", f"/issues/{ticket_id}/comments", [("content", body)])
 
+    def comments(self, ticket_id: str) -> list[str]:
+        raw = self._call("GET", f"/issues/{ticket_id}/comments",
+                         [("count", "100"), ("order", "asc")])
+        return [c.get("content") or "" for c in raw]
+
     def set_state(self, ticket_id: str, label: str) -> None:
         """Gỡ hết category trạng thái cũ, đặt cái mới. Category khác giữ nguyên."""
         ids = self._category_ids()
@@ -157,10 +162,3 @@ class BacklogTracker:
         if not items:
             raise BacklogError(f"project không có {kind} nào")
         return items[0]["id"]
-
-
-def _meta(body: str, key: str) -> str | None:
-    marker = f"<!-- {key}: "
-    if marker not in body:
-        return None
-    return body.split(marker, 1)[1].split("-->", 1)[0].strip() or None

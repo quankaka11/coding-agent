@@ -15,7 +15,7 @@ from typing import Any, Callable
 from ..core import gitutil, parsers
 from . import astcheck
 from .baseline import Baseline
-from ..config.profile import Profile, matches
+from ..config.profile import COVERAGE_FILE, Profile, matches
 from ..core.run import RunContext
 
 PASS, FAIL, SKIP = "pass", "fail", "out_of_scope"
@@ -50,6 +50,8 @@ class Context:
     evidence: dict
     task_type: str = "T1"
     acceptance_ids: list[str] = field(default_factory=list)
+    #: `scope.modules` của spec — phạm vi mà người đã duyệt.
+    modules: list[str] = field(default_factory=list)
 
     def is_test_file(self, path: str) -> bool:
         return matches(path, self.prof.test_globs) is not None
@@ -171,9 +173,11 @@ def g6_real_asserts(c: Context) -> RuleResult:
 
 def g7_coverage(c: Context) -> RuleResult:
     """Coverage toàn repo không giảm VÀ ≥ ngưỡng % dòng mới được test chạy qua (luật AND, quyết định B3)."""
-    cov = parsers.coverage_json(c.repo / "coverage.json")
+    cov = parsers.coverage_json(c.repo / COVERAGE_FILE)
     if cov is None:
-        return RuleResult("G-7", SKIP, "không có coverage.json — khai commands.coverage để bật")
+        return RuleResult("G-7", SKIP,
+                          "chưa đo được coverage — cần checks.coverage: available "
+                          "và commands.coverage có {coverage_json}")
     threshold = float(c.prof.limit("coverage_new_line_pct"))
     new_src = {f: lines for f, lines in c.new_lines.items()
                if not c.is_test_file(f) and f.endswith(".py")}
@@ -210,21 +214,72 @@ def g8_ac_markers(c: Context) -> RuleResult:
                       {"expected": c.acceptance_ids, "found": sorted(seen), "missing": missing})
 
 
+def g9_test_freeze(c: Context) -> RuleResult:
+    """Test là hợp đồng: viết xong, chạy thử xong thì không ai được sửa nữa.
+
+    Đây là đường gian lận rẻ nhất và khó thấy nhất. Đổi `assert total == 93.6`
+    thành `assert True` rồi sửa code cho qua là mọi luật khác vẫn xanh: số test
+    không giảm (G-1), vẫn có câu assert (G-6), và bằng chứng fail-trước đã được
+    ghi từ trước khi test bị sửa (G-4). Chỉ có mốc commit test-first mới phân biệt
+    được "code vượt qua test" với "test được hạ xuống cho vừa code".
+    """
+    sha = (c.evidence.get("test_freeze") or {}).get("testfirst_sha")
+    if not sha:
+        return RuleResult("G-9", SKIP, "không có mốc commit test-first (chỉ Phase B sinh ra)")
+    try:
+        touched = [f for f in gitutil.changed_files(c.repo, sha) if c.is_test_file(f)]
+    except RuntimeError as exc:
+        # sha trong evidence không tồn tại trong repo này: không kết luận bừa
+        return RuleResult("G-9", SKIP, f"không đọc được mốc test-first: {exc}", {"sha": sha[:12]})
+    return RuleResult("G-9", FAIL if touched else PASS,
+                      f"{len(touched)} file test bị sửa sau khi đã chốt" if touched
+                      else "không file test nào bị đụng sau bước test-first",
+                      {"testfirst_sha": sha[:12], "touched": touched[:10]})
+
+
+def g10_plan_scope(c: Context) -> RuleResult:
+    """Chỉ được đụng phạm vi mà người đã duyệt.
+
+    G-3 so với `allowed_paths` của cả repo, rộng hơn một plan rất nhiều. Không có
+    luật này thì "làm đúng plan đã chốt" chỉ là một dòng dặn dò trong skill, mà
+    lời dặn thì agent đọc xong có thể bỏ qua — đúng thứ mà ranh giới skill/script
+    nói là không được tin.
+
+    Phạm vi lấy từ `scope.modules` trong spec, không parse mục "File sẽ đụng" của
+    plan: spec là dữ liệu có cấu trúc, markdown thì không.
+    """
+    if c.prof.conventions.get("enforce_plan_scope") is False:
+        return RuleResult("G-10", SKIP, "tắt trong hồ sơ repo (conventions.enforce_plan_scope)")
+    if not c.modules:
+        return RuleResult("G-10", SKIP, "spec không khai scope.modules")
+    allowed = [m.rstrip("/") for m in c.modules]
+    outside = [f for f in c.changed
+               if not c.is_test_file(f)
+               and not any(f == m or f.startswith(m + "/") for m in allowed)]
+    return RuleResult("G-10", FAIL if outside else PASS,
+                      f"đụng {len(outside)} file ngoài phạm vi plan" if outside
+                      else "chỉ đụng phạm vi đã duyệt",
+                      {"modules": allowed, "outside": outside[:10]})
+
+
 RULES: list[Callable[[Context], RuleResult]] = [
     g1_test_count, g2_no_skip, g3_forbidden_paths, g4_fail_before_pass_after,
-    g5_same_sha, g6_real_asserts, g7_coverage, g8_ac_markers,
+    g5_same_sha, g6_real_asserts, g7_coverage, g8_ac_markers, g9_test_freeze,
+    g10_plan_scope,
 ]
 
 
 def run(ctx: RunContext, prof: Profile, repo: Path, base_sha: str,
         baseline: Baseline | None = None, gate_report: dict | None = None,
-        task_type: str = "T1", acceptance_ids: list[str] | None = None) -> dict:
+        task_type: str = "T1", acceptance_ids: list[str] | None = None,
+        modules: list[str] | None = None) -> dict:
     gate_report = gate_report or _load_json(ctx.run_dir / "gate-report.json")
     evidence = _load_json(ctx.run_dir / "evidence.json")
     c = Context(prof=prof, repo=repo, base_sha=base_sha, baseline=baseline,
                 gate_report=gate_report, changed=gitutil.changed_files(repo, base_sha),
                 new_lines=gitutil.new_lines(repo, base_sha), evidence=evidence,
-                task_type=task_type, acceptance_ids=acceptance_ids or [])
+                task_type=task_type, acceptance_ids=acceptance_ids or [],
+                modules=modules or [])
     ctx.emit("antigaming.start", changed_files=len(c.changed), base_sha=base_sha[:8])
 
     results = [rule(c) for rule in RULES]
