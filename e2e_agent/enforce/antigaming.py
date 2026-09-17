@@ -181,8 +181,18 @@ def g7_coverage(c: Context) -> RuleResult:
     threshold = float(c.prof.limit("coverage_new_line_pct"))
     new_src = {f: lines for f, lines in c.new_lines.items()
                if not c.is_test_file(f) and f.endswith(".py")}
-    total_new = sum(len(v) for v in new_src.values())
-    covered = sum(len(lines & cov.executed.get(f, set())) for f, lines in new_src.items())
+    # File có dòng mới mà coverage không hề biết tới: không kết luận được, và
+    # cũng không được ghi pass. Nói thẳng ra để người mở rộng phạm vi đo.
+    unmeasured = sorted(f for f in new_src if not cov.measurable(f))
+    if unmeasured:
+        return RuleResult("G-7", SKIP,
+                          f"coverage không đo tới {unmeasured[:5]} — mở rộng phạm vi "
+                          f"trong commands.coverage", {"unmeasured": unmeasured})
+    # Chỉ đếm dòng mà coverage coi là câu lệnh. Một lệnh trải nhiều dòng chỉ có
+    # dòng đầu được tính là chạy qua, nên đếm cả dòng tiếp nối là báo oan.
+    measured = {f: lines & cov.measurable(f) for f, lines in new_src.items()}
+    total_new = sum(len(v) for v in measured.values())
+    covered = sum(len(lines & cov.executed.get(f, set())) for f, lines in measured.items())
     pct = 100.0 if total_new == 0 else round(covered * 100 / total_new, 1)
     before = c.baseline.coverage_pct if c.baseline else None
     dropped = before is not None and cov.total_pct < before - 0.01

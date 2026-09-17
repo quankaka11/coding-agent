@@ -55,6 +55,13 @@ def junit(path: Path) -> TestReport:
 class Coverage:
     total_pct: float = 0.0
     executed: dict[str, set[int]] = field(default_factory=dict)
+    #: Dòng LÀ câu lệnh nhưng không chạy qua. `executed | missing` là tập dòng
+    #: đo được — dòng trống, dòng tiếp nối của một câu lệnh nhiều dòng, hay dòng
+    #: bị loại trừ đều không nằm trong đó và không được tính vào mẫu số.
+    missing: dict[str, set[int]] = field(default_factory=dict)
+
+    def measurable(self, file: str) -> set[int]:
+        return self.executed.get(file, set()) | self.missing.get(file, set())
 
 
 def coverage_json(path: Path) -> Coverage | None:
@@ -64,4 +71,5 @@ def coverage_json(path: Path) -> Coverage | None:
     cov = Coverage(total_pct=float(raw.get("totals", {}).get("percent_covered", 0.0)))
     for name, entry in (raw.get("files") or {}).items():
         cov.executed[name] = set(entry.get("executed_lines", []))
+        cov.missing[name] = set(entry.get("missing_lines", []))
     return cov

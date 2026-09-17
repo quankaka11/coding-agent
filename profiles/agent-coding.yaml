@@ -30,7 +30,7 @@ checks:
   lint:        {status: available}
   typecheck:   {status: out_of_scope, reason: "repo chưa có cấu hình mypy"}
   secret_scan: {status: out_of_scope, reason: "chưa cài gitleaks trong môi trường chạy"}
-  coverage:    {status: out_of_scope, reason: "chưa cài pytest-cov trong môi trường chạy; bật lên thì G-7 mới chấm và task T2 mới chạy được"}
+  coverage:    {status: available}
   sast:        {status: out_of_scope, reason: "chưa cài semgrep trong môi trường chạy"}
 
 limits:
@@ -45,7 +45,7 @@ limits:
 conventions:
   ac_marker: "pytest.mark.ac"
 
-mutation: {enabled: false, max_mutants: 20, timeout_sec: 300,
+mutation: {enabled: true, max_mutants: 20, timeout_sec: 300,
            per_mutant_timeout_sec: 120, min_kill_pct: 70}
 
 tracker:

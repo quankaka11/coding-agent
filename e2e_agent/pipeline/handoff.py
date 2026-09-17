@@ -14,6 +14,7 @@ import json
 from dataclasses import dataclass
 
 OPEN = "<!-- e2ea:handoff"
+TASK_OPEN = "<!-- e2ea:task"
 CLOSE = "-->"
 
 
@@ -25,13 +26,50 @@ class Handoff:
     plan: str
 
 
-def pack(human_text: str, *, base_sha: str, spec_yaml: str, plan: str) -> str:
-    payload = json.dumps({"base_sha": base_sha, "spec": spec_yaml, "plan": plan},
-                         ensure_ascii=False)
+def _wrap(open_mark: str, data: dict) -> str:
+    payload = json.dumps(data, ensure_ascii=False)
     # Không dấu `>` nào lọt vào payload thì không chuỗi nào trong plan có thể
     # đóng sớm khối HTML comment. `>` vẫn là JSON hợp lệ.
-    payload = payload.replace(">", "\\u003e")
-    return f"{human_text}\n\n{OPEN}\n{payload}\n{CLOSE}\n"
+    return f"{open_mark}\n{payload.replace('>', chr(92) + 'u003e')}\n{CLOSE}\n"
+
+
+def _find(open_mark: str, texts: list[str]) -> dict | None:
+    """Payload MỚI NHẤT mang dấu này. Không có thì None — không đoán."""
+    for text in reversed(texts):
+        if open_mark not in text:
+            continue
+        raw = text.split(open_mark, 1)[1].split(CLOSE, 1)[0].strip()
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
+
+
+def pack(human_text: str, *, base_sha: str, spec_yaml: str, plan: str) -> str:
+    return f"{human_text}\n\n" + _wrap(
+        OPEN, {"base_sha": base_sha, "spec": spec_yaml, "plan": plan})
+
+
+def pack_task(human_text: str, *, task_type: str, modules: list[str],
+              acceptance_ids: list[str]) -> str:
+    """Bàn giao MR → CI.
+
+    CI chỉ có cái MR, không có ticket lẫn `runs/`, nên nếu không mang theo thì
+    G-8 và G-10 vĩnh viễn SKIP ở đúng nơi đối chứng đáng tin nhất. Không có biến
+    CI nào chở được `scope.modules`, và người thì không thể tự điền vào file CI
+    vì mỗi MR một giá trị khác.
+    """
+    return f"{human_text}\n\n" + _wrap(
+        TASK_OPEN, {"task_type": task_type, "modules": list(modules),
+                    "ac": list(acceptance_ids)})
+
+
+def unpack_task(text: str) -> dict | None:
+    """Đọc bàn giao MR → CI. Thiếu thì trả None và các luật liên quan vẫn SKIP."""
+    return _find(TASK_OPEN, [text or ""])
 
 
 def unpack(comments: list[str]) -> Handoff | None:
@@ -41,14 +79,8 @@ def unpack(comments: list[str]) -> Handoff | None:
     Phase A là lỗi thao tác của người, và phải được nói thẳng ra như vậy.
     """
     for text in reversed(comments):
-        if OPEN not in text:
-            continue
-        raw = text.split(OPEN, 1)[1].split(CLOSE, 1)[0].strip()
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(data, dict) or not data.get("spec"):
+        data = _find(OPEN, [text])
+        if not data or not data.get("spec"):
             continue
         return Handoff(base_sha=str(data.get("base_sha") or ""),
                        spec_yaml=str(data["spec"]), plan=str(data.get("plan") or ""))

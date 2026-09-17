@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import os
 import secrets
 import sys
 from pathlib import Path
@@ -13,6 +14,7 @@ from .config import profile as profile_mod
 from .core import gitutil
 from .enforce import antigaming, baseline as baseline_mod, gate as gate_mod, mutation
 from . import agent as agent_mod, forge as forge_mod, notify as notify_mod, tracker as tracker_mod
+from .pipeline import handoff
 from .pipeline.orchestrator import Orchestrator
 from .pipeline.watcher import Watcher
 from .tracker import base as L
@@ -102,20 +104,40 @@ def cmd_check(args) -> int:
     repo = Path(args.repo).resolve()
     base = _load_baseline(args)
     base_sha = args.base_sha or (base.base_sha if base else gitutil.head_sha(repo) + "~1")
+    task_type, acs, modules = args.task_type, args.ac or [], args.modules or []
     with _run(args, "B") as ctx:
+        if args.task_meta_env:
+            # CI không có ticket lẫn `runs/`, nên phạm vi plan phải đi cùng MR.
+            # Thiếu payload thì giữ nguyên cờ dòng lệnh: G-8/G-10 SKIP, không báo oan.
+            meta = handoff.unpack_task(os.environ.get(args.task_meta_env, ""))
+            ctx.emit("task_meta.read", source=args.task_meta_env, found=bool(meta),
+                     level="info" if meta else "warn", **(meta or {}))
+            if meta:
+                task_type = task_type or meta.get("task_type")
+                acs = acs or list(meta.get("ac") or [])
+                modules = modules or list(meta.get("modules") or [])
+        task_type = task_type or "T1"
         if args.verify_from_base:
             from .pipeline import verify_from_base
             base, ev = verify_from_base(ctx, prof, repo, base_sha, args.work_root)
             _merge_evidence(ctx, ev)
         with ctx.stage("gate"):
             rep = gate_mod.run(ctx, prof, repo, base)
-        if args.mutation:
+        if prof.is_available("coverage"):
+            # G-7 đọc coverage.json của chính cây code đang soi. Không đo ở đây thì
+            # luật quan trọng nhất về "test có chạy qua dòng mới không" vĩnh viễn
+            # bỏ qua trên CI, dù hồ sơ đã khai coverage available.
+            with ctx.stage("coverage"):
+                baseline_mod.measure_coverage(ctx, prof, repo)
+        # T2 và T3 không có bằng chứng fail-trước nên mutation là lưới duy nhất;
+        # T1 thì chạy mutation chỉ tốn thời gian CI. Tự quyết theo loại task để
+        # người viết file CI không phải đoán — họ không biết trước MR nào loại gì.
+        if args.mutation or (task_type in ("T2", "T3") and prof.mutation_cfg("enabled")):
             with ctx.stage("mutation"):
                 _merge_evidence(ctx, {"mutation": mutation.run(ctx, prof, repo, base_sha)})
         with ctx.stage("antigaming"):
             ag = antigaming.run(ctx, prof, repo, base_sha, base, rep,
-                                task_type=args.task_type, acceptance_ids=args.ac or [],
-                                modules=args.modules or [])
+                                task_type=task_type, acceptance_ids=acs, modules=modules)
         if ag["verdict"] == "FAIL":
             ctx.decide(Reason.HUMAN_ANTIGAMING, f"vi phạm: {', '.join(ag['failed_rules'])}")
         if rep["verdict"] == "FAIL":
@@ -335,10 +357,16 @@ def build_parser() -> argparse.ArgumentParser:
     _common(c)
     c.add_argument("--baseline")
     c.add_argument("--base-sha")
-    c.add_argument("--task-type", default="T1", choices=("T1", "T2", "T3"))
+    # Không đặt sẵn "T1": còn None thì `--task-meta-env` mới điền được loại task
+    # thật vào. Đặt sẵn là mọi MR trên CI đều bị soi như T1, kể cả T2 và T3.
+    c.add_argument("--task-type", default=None, choices=("T1", "T2", "T3"))
     c.add_argument("--ac", nargs="*")
     c.add_argument("--modules", nargs="*", help="phạm vi plan đã duyệt (spec.scope.modules) cho G-10")
-    c.add_argument("--mutation", action="store_true")
+    c.add_argument("--task-meta-env", metavar="BIẾN",
+                   help="tên biến môi trường chứa mô tả MR, để lấy task_type/ac/modules "
+                        "mà CI không tự biết (GitLab: CI_MERGE_REQUEST_DESCRIPTION)")
+    c.add_argument("--mutation", action="store_true",
+                   help="buộc chạy mutation; mặc định chỉ chạy khi task là T2/T3")
     c.add_argument("--work-root", default=str(WORK_DIR))
     c.add_argument("--verify-from-base", action="store_true",
                    help="tự dựng lại baseline và bằng chứng fail-trước từ base commit "

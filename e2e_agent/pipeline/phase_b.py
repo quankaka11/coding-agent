@@ -16,7 +16,7 @@ from ..core.run import RunContext
 from ..enforce import antigaming, baseline as baseline_mod, gate as gate_mod, mutation
 from ..forge.base import MR_LABEL
 from ..tracker.base import Ticket
-from . import phase_a, sandbox
+from . import handoff, phase_a, sandbox
 
 
 def run(ctx: RunContext, prof: Profile, repo: Path, work: Path, ticket: Ticket,
@@ -177,7 +177,9 @@ def _feedback(gate_report: dict) -> str:
 
 def _create_mr(ctx, prof, work, ticket, spec, plan, base, gate_report, ag, forge, branch):
     head = gitutil.head_sha(work)
-    body = _mr_body(ticket, spec, plan, base, gate_report, ag, head, ctx)
+    body = handoff.pack_task(_mr_body(ticket, spec, plan, base, gate_report, ag, head, ctx),
+                             task_type=spec.task_type, modules=spec.modules,
+                             acceptance_ids=spec.ac_ids)
     (ctx.run_dir / "mr-body.md").write_text(body, encoding="utf-8")
     forge.push_branch(work, branch)
     mr = forge.create_mr(branch, prof.base_branch, f"[{ticket.id}] {spec.objective[:70]}",
