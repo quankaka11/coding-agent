@@ -13,6 +13,7 @@ class Reason(str, Enum):
     NOMR_TEST_PASSES_PRE = "NOMR_TEST_PASSES_PRE"
     NOMR_GATE_FAIL = "NOMR_GATE_FAIL"
     NOMR_LOOP_LIMIT = "NOMR_LOOP_LIMIT"
+    HUMAN_TICKET_MISROUTED = "HUMAN_TICKET_MISROUTED"
     HUMAN_ANTIGAMING = "HUMAN_ANTIGAMING"
     HUMAN_FLAKY = "HUMAN_FLAKY"
     HUMAN_BUDGET = "HUMAN_BUDGET"
@@ -31,6 +32,10 @@ EXPLAIN: dict[Reason, str] = {
     Reason.NOMR_TEST_PASSES_PRE: "Test viết trước đã pass trên code chưa sửa — không có bug xác định để sửa.",
     Reason.NOMR_GATE_FAIL: "Gate vẫn fail sau số vòng tự sửa cho phép.",
     Reason.NOMR_LOOP_LIMIT: "Vòng implement chạm trần lặp.",
+    Reason.HUMAN_TICKET_MISROUTED: (
+        "Ticket bị đặt vào trạng thái dành riêng cho ticket do agent sinh ra. "
+        "Người chỉ nên đặt `agent:try` để nhờ agent lập plan; `agent:plan-approved` và "
+        "`agent:plan-rejected` chỉ dùng trên ticket đã có plan do agent viết."),
     Reason.HUMAN_ANTIGAMING: "Anti-gaming bắt được vi phạm. KHÔNG cho agent tự sửa — giữ nguyên hiện trường cho người xem.",
     Reason.HUMAN_FLAKY: "Test không nhất quán giữa các lần chạy.",
     Reason.HUMAN_BUDGET: "Vượt trần thời gian hoặc chi phí.",

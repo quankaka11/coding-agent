@@ -62,6 +62,7 @@ class RunContext:
         self.cost_usd = 0.0
         self.outcome: Reason | None = None
         self.outcome_label: str | None = None
+        self.outcome_why: str = ""
 
     # -- sự kiện ---------------------------------------------------------
     def emit(self, event: str, level: str = "info", **data: Any) -> None:
@@ -127,6 +128,7 @@ class RunContext:
             raise RuntimeError(f"run đã chốt {self.outcome.value}, không được chốt lại")
         self.outcome = reason
         self.outcome_label = label or LABEL[reason]
+        self.outcome_why = why
         level = "info" if reason is Reason.OK else "warn" if reason.name.startswith("NOMR_") else "error"
         self.emit("decision", level=level, reason=reason.value, label=self.outcome_label,
                   why=why, meaning=explain(reason), **data)
@@ -136,6 +138,7 @@ class RunContext:
         if self.outcome is None:
             self.outcome = Reason.ERROR
             self.outcome_label = LABEL[Reason.ERROR]
+            self.outcome_why = "run kết thúc mà không chốt kết cục (vi phạm N-3)"
             self.emit("decision", level="error", reason=Reason.ERROR.value,
                       label=self.outcome_label, why="run kết thúc mà không chốt kết cục (vi phạm N-3)")
         elapsed = int((time.monotonic() - self.started) * 1000)
@@ -144,7 +147,8 @@ class RunContext:
                   duration_ms=elapsed, cost_usd=round(self.cost_usd, 4))
         (self.run_dir / "outcome.json").write_text(json.dumps(
             {"run_id": self.run_id, "task_id": self.task_id, "reason": self.outcome.value,
-             "label": label, "duration_ms": elapsed}, ensure_ascii=False, indent=2),
+             "label": label, "why": self.outcome_why, "duration_ms": elapsed},
+            ensure_ascii=False, indent=2),
             encoding="utf-8")
         self.log.close()
         return self.outcome

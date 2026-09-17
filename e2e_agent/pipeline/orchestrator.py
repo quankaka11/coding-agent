@@ -68,6 +68,17 @@ class Orchestrator:
     def promote(self, ticket: Ticket) -> str:
         """Người duyệt plan → tạo ticket chi tiết, chính nó mới vào Phase B."""
         spec_text, plan = _split_plan_comment(self._last_plan(ticket))
+        if not spec_text.strip():
+            # Người đặt `agent:plan-approved` lên ticket chưa từng qua Phase A. Không
+            # có plan để duyệt, nên nếu cứ tạo ticket chi tiết thì nó rỗng và Phase B
+            # sẽ chết ở bước sau — xa chỗ gây lỗi, khó hiểu cho người vận hành.
+            with self._ctx(ticket, "A") as ctx:
+                ctx.decide(Reason.HUMAN_TICKET_MISROUTED,
+                           f"{ticket.id} đang ở `{L.PLAN_APPROVED}` nhưng agent chưa lập plan nào "
+                           f"cho ticket này — không có gì để duyệt. Đổi category sang `{L.TRY}` "
+                           f"để agent đọc ticket và lập plan trước.")
+            self._finalize(ticket, ctx)
+            return ctx.outcome.value
         detail = self.tracker.create_ticket(
             title=f"[impl] {ticket.title}",
             body=f"<!-- parent: {ticket.id} -->\n<!-- base_sha: {ticket.base_sha or ''} -->\n\n"
@@ -91,6 +102,14 @@ class Orchestrator:
     # -- Phase B ---------------------------------------------------------
     def run_phase_b(self, ticket: Ticket) -> Reason:
         with self._ctx(ticket, "B") as ctx:
+            # `agent:impl` là trạng thái máy: chỉ ticket chi tiết do promote() sinh ra
+            # mới có liên kết về ticket gốc. Thiếu liên kết đó nghĩa là người gán nhầm
+            # category — chặn ngay trước khi dựng worktree hoặc gọi agent.
+            if not ticket.parent:
+                ctx.decide(Reason.HUMAN_TICKET_MISROUTED,
+                           f"{ticket.id} đang ở `{L.IMPL}` nhưng không phải ticket chi tiết do "
+                           f"agent sinh ra (không có liên kết về ticket gốc). Nếu đây là ticket "
+                           f"bạn tự tạo, đổi category sang `{L.TRY}`.")
             self.tracker.set_state(ticket.id, L.RUNNING)
             spec, plan = _read_detail(ctx, ticket)
             base = ticket.base_sha or gitutil.head_sha(self.repo)
@@ -141,11 +160,14 @@ class Orchestrator:
                                      f"Ticket chi tiết **{ticket.id}** kết thúc: `{ctx.outcome.value}`.")
         from ..core.reasons import explain
         if ctx.outcome is not Reason.OK:
-            self.tracker.comment(ticket.id, f"**{ctx.outcome.value}** — {explain(ctx.outcome)}\n\n"
-                                            f"Log: `{ctx.run_dir}`")
+            # `why` là câu duy nhất nói cho người vận hành biết phải làm gì. Nếu chỉ
+            # gửi explain() thì thông báo chung chung tới mức phải mở code ra mới hiểu.
+            why = f"\n\n{ctx.outcome_why}" if ctx.outcome_why else ""
+            self.tracker.comment(ticket.id, f"**{ctx.outcome.value}** — {explain(ctx.outcome)}"
+                                            f"{why}\n\nLog: `{ctx.run_dir}`")
             event = NEEDS_HUMAN if LABEL[ctx.outcome] == L.NEEDS_HUMAN else NO_MR
             self._announce(ctx, event, f"{ctx.outcome.value} — {ticket.id}", ticket,
-                           f"**{ticket.title}**\n\n{explain(ctx.outcome)}")
+                           f"**{ticket.title}**{why}\n\n{explain(ctx.outcome)}")
         elif ctx.phase == "B":
             self._announce(ctx, MR_CREATED, f"MR đã mở — {ticket.id}", ticket,
                            f"**{ticket.title}**\n\nGate PASS và anti-gaming PASS, chờ review.",
@@ -181,7 +203,10 @@ def _split_plan_comment(blob: str) -> tuple[str, str]:
 def _read_detail(ctx: RunContext, ticket: Ticket) -> tuple[spec_mod.Spec, str]:
     body = ticket.body
     if "```yaml" not in body:
-        ctx.decide(Reason.ERROR, "ticket chi tiết không chứa spec YAML")
+        # Ticket người tạo đã bị chặn từ run_phase_b, nên tới đây thật sự là bất ngờ:
+        # promote() luôn ghi khối yaml vào body.
+        ctx.decide(Reason.ERROR, "ticket chi tiết do agent sinh ra nhưng thiếu khối spec YAML "
+                                 "— nhiều khả năng body bị sửa tay sau khi tạo")
     spec_text = body.split("```yaml", 1)[1].split("```", 1)[0]
     plan = body.split("## Plan đã duyệt", 1)[-1].strip()
     try:
