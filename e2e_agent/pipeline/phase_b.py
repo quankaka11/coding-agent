@@ -459,9 +459,6 @@ def _mr_body(ticket, spec, plan, base, gate_report, ag, evidence, head, ctx, wor
     acs = "\n".join(f"- **{ac['id']}**: {ac['text']}" for ac in spec.acceptance_criteria)
     warning = _plan_preamble(plan)
     approach = _plan_section(plan, phase_a.SEC_APPROACH) or spec.objective
-    files = _plan_section(plan, phase_a.SEC_FILES)
-    tests_written = _plan_section(plan, phase_a.SEC_TESTS) or "_(plan không có mục 'Test sẽ viết')_"
-    risks = _plan_section(plan, phase_a.SEC_RISKS) or "- không"
     # Giả định/ngoài phạm vi: spec + phần plan bổ sung từ discovery (nếu có nội dung
     # thật). `_dedup` chỉ bắt được bản chép y hệt — lưới chính là planning.md chỉ đòi
     # mục "mới", đây là lưới hai khi agent vẫn chép cả mục cũ sang.
@@ -480,6 +477,7 @@ def _mr_body(ticket, spec, plan, base, gate_report, ag, evidence, head, ctx, wor
 
 {rows}
 """
+    tests_line = _tests_line(gate_report, base, ag, evidence)
     fixes = evidence.get("self_fix", {})
     fix_lines = []
     if fixes.get("lint"):
@@ -494,21 +492,15 @@ def _mr_body(ticket, spec, plan, base, gate_report, ag, evidence, head, ctx, wor
     if mut := evidence.get("mutation"):
         fix_lines.append(f"- Mutation: {mut.get('status')} — giết {mut.get('kill_pct', '—')}% "
                          f"({mut.get('killed', 0)}/{mut.get('total', 0)})")
-    try:
-        stat = gitutil.diff_stat(work, base.base_sha, head)
-        changed = gitutil.changed_files(work, base.base_sha, head)
-        stat_line = f"{stat['files']} file, +{stat['insertions']}/−{stat['deletions']} dòng"
-    except RuntimeError:
-        changed, stat_line = list(spec.modules), "không đo được"
-
     def section(title: str, body: str) -> str:
         return f"## {title}\n\n{body}\n\n" if body.strip() else ""
 
-    return (
+    # Mục trống (PRE_EXISTING, fix_lines, review) để lại dòng trống thừa — dồn lại,
+    # nếu không mô tả MR trông như bị cắt dở.
+    return re.sub(r"\n{3,}", "\n\n", (
         (f"{warning}\n\n" if warning else "")
         + f"## Giải pháp\n\n{approach}\n\n"
-        + section("File đã thay đổi", files)
-        + f"## Acceptance criteria\n\n{acs}\n\n**Test:**\n\n{tests_written}\n\n"
+        + f"## Acceptance criteria\n\n{acs}\n\n{tests_line}\n\n"
         + section("Giả định đã duyệt", "\n".join(f"- {a}" for a in assumed))
         + section("Ngoài phạm vi (cố tình không thực hiện)", "\n".join(f"- {o}" for o in skipped))
         + f"""## Bằng chứng
@@ -523,24 +515,39 @@ Baseline: {base.total} test, {len(base.failed_tests)} lỗi sẵn có, ổn đ�
 | Anti-gaming | Kết quả | Ghi chú |
 |---|---|---|
 {rules}
+
+{chr(10).join(fix_lines)}
 {review}
-## Thay đổi
-
-{chr(10).join([f"- {stat_line}", *fix_lines])}
-
-## Rủi ro và rollback
-
-{risks}
-
-Rollback: revert MR này. File đã đổi: {", ".join(f"`{f}`" for f in changed) or "—"}.
-
 ## Truy vết
 
 Ticket {ticket.id} (gốc {ticket.parent or "—"}) · commit `{head[:12]}` · run `{ctx.run_id}` (`{ctx.run_dir}/events.jsonl`)
 
 ---
 *MR do agent tạo. Gate và anti-gaming là script tất định, CI chạy lại toàn bộ trên MR này.*
-""")
+"""))
+
+
+def _tests_line(gate_report: dict, base, ag: dict, evidence: dict) -> str:
+    """Một câu về test, dựng từ số liệu script — không dán lại mục "Test sẽ viết".
+
+    Danh sách nodeid kèm assert nằm sẵn trong diff; nhắc lại trong mô tả là bắt
+    người review đọc hai lần cùng một thứ.
+    """
+    total = gate_report["checks"].get("test", {}).get("total")
+    added = (total - base.total) if isinstance(total, int) else 0
+    proved = [t.split("::")[-1] for t in
+              ((ag["rules"].get("G-4") or {}).get("evidence") or {}).get("tests") or []]
+    head = (f"**Test:** {added} test mới ({base.total} → {total})" if added > 0
+            else f"**Test:** {total} test")
+    if proved:
+        tail = ("; đỏ trên code cũ rồi xanh sau khi sửa: "
+                + ", ".join(f"`{t}`" for t in proved[:8]))
+    elif mut := evidence.get("mutation"):
+        tail = (f"; code đã đúng sẵn nên test xanh ngay, mutation giết "
+                f"{mut.get('kill_pct', '—')}% đột biến")
+    else:
+        tail = ""
+    return head + tail + "."
 
 
 def _dedup(items: list[str]) -> list[str]:
