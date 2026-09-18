@@ -14,6 +14,9 @@ from ..core.run import RunContext
 from ..tracker.base import Ticket
 
 SKILLS = Path(__file__).resolve().parents[1] / "skills"
+#: planning.md dặn plan ≤ 40 dòng. Quá xa mức đó thì agent đang phớt lờ ràng buộc,
+#: và plan dài là thứ chảy thẳng vào mô tả MR — nói ra trong log thay vì im lặng.
+PLAN_MAX_LINES = 60
 
 
 def run(ctx: RunContext, prof: Profile, repo: Path, ticket: Ticket, agent,
@@ -29,8 +32,10 @@ def run(ctx: RunContext, prof: Profile, repo: Path, ticket: Ticket, agent,
         ctx.emit("planning.rejections", count=len(rejections))
 
     with ctx.stage("intake"):
+        # Intake phải biết vùng agent được đụng: không thì scope/AC kéo cả docs, README
+        # vào, planning đành ghi "không làm được", và MR mở ra với một AC tự nhận không đạt.
         prompt = (_skill("intake") + _mode_block(prof.conventions.get("intake_mode", "assume"))
-                  + _ticket_block(ticket) + rejected_block)
+                  + _ticket_block(ticket) + _paths_block(prof) + rejected_block)
         result = _ask(ctx, agent, repo, "intake", prompt)
         spec = _parse_spec(ctx, agent, repo, result, ticket, prompt)
         # Lưu TRƯỚC khi phán: spec là thứ người xem khi hỏi "agent vướng ở đâu",
@@ -63,21 +68,31 @@ def run(ctx: RunContext, prof: Profile, repo: Path, ticket: Ticket, agent,
     with ctx.stage("planning"):
         prompt = (_skill("planning") + _spec_block(spec)
                   + f"\n## Kết quả discovery\n\n{discovery}\n"
-                  + f"\n## Ràng buộc đường dẫn\n\nallowed_paths: {prof.allowed_paths}\n"
-                    f"forbidden_paths: {prof.forbidden_paths}\n"
-                  + rejected_block)
+                  + _paths_block(prof) + rejected_block)
         result = _ask(ctx, agent, repo, "planning", prompt)
         plan = result.text
         (ctx.run_dir / "plan.md").write_text(plan, encoding="utf-8")
-        ctx.emit("planning.ready", chars=len(plan))
+        long_plan = len(plan.splitlines()) > PLAN_MAX_LINES
+        ctx.emit("planning.ready", chars=len(plan), lines=len(plan.splitlines()),
+                 level="warn" if long_plan else "info",
+                 note=f"plan dài hơn {PLAN_MAX_LINES} dòng — prompt dặn ≤ 40"
+                      if long_plan else None)
 
     return {"spec": spec, "plan": plan, "discovery": discovery}
 
 
 def _ask(ctx: RunContext, agent, repo: Path, name: str, prompt: str) -> AgentResult:
+    """Gọi agent; lỗi tiến trình (timeout, mạng, thoát khác 0) thì thử lại MỘT lần.
+
+    Lỗi kiểu đó không phải chuyện của người — giao người ngay là bắt họ bấm chạy lại.
+    Lần hai vẫn lỗi mới là ERROR.
+    """
     result = agent.run(ctx, prompt, repo, name)
     if not result.ok:
-        ctx.decide(Reason.ERROR, f"agent {name} lỗi: {result.error}", agent=name)
+        ctx.emit("agent.retry", level="warn", agent=name, error=result.error[:200])
+        result = agent.run(ctx, prompt, repo, f"{name}-again")
+    if not result.ok:
+        ctx.decide(Reason.ERROR, f"agent {name} lỗi 2 lần: {result.error}", agent=name)
     return result
 
 
@@ -145,25 +160,30 @@ def _rejected_block(rejections: list[str] | None) -> str:
 
 def _mode_block(mode: str) -> str:
     if mode == "ask":
-        return ("## Chế độ: ask\n\nRepo này muốn được HỎI khi ticket mơ hồ: chỗ nào không rõ thì "
-                "đánh `fail` ở readiness kèm `readiness_notes` và `questions`, không tự giả định. "
-                "`assumptions` để [].\n\n")
-    return ("## Chế độ: assume\n\nÁp \"Nguyên tắc tự chủ\" ở trên: không hỏi lại; chọn cách hiểu "
-            "hẹp nhất đúng chữ trên ticket, ghi vào `assumptions`; việc liên quan nhưng ticket "
-            "không yêu cầu ghi vào `out_of_scope`. Chỉ `fail` khi không cách hiểu nào ra được "
-            "test tất định.\n\n")
+        return ("## Chế độ: ask\n\nRepo này muốn được HỎI: chỗ mơ hồ thì đánh `fail` ở readiness "
+                "kèm `readiness_notes` và `questions`, không tự giả định; `assumptions` để [].\n\n")
+    return "## Chế độ: assume\n\nÁp đúng mục \"Cách xử lý chỗ mơ hồ\" ở trên.\n\n"
+
+
+def _paths_block(prof: Profile) -> str:
+    return (f"\n## Ràng buộc đường dẫn\n\nallowed_paths: {prof.allowed_paths}\n"
+            f"forbidden_paths: {prof.forbidden_paths}\n")
 
 
 def _ticket_block(ticket: Ticket) -> str:
     return f"## Ticket {ticket.id}\n\n**{ticket.title}**\n\n{ticket.body}\n"
 
 
-def _spec_block(spec) -> str:
+def _spec_block(spec, for_tests: bool = False) -> str:
+    """Spec cho prompt. `for_tests=True` chỉ đưa AC + tái hiện + phạm vi: giả định và
+    ngoài-phạm-vi thường nói luôn cách sửa, mà agent viết test không được thấy cách sửa."""
     lines = ["## Spec\n", f"- Mục tiêu: {spec.objective}", f"- Loại: {spec.task_type}",
              f"- Phạm vi: {spec.modules}"]
     lines += [f"- {ac['id']}: {ac['text']}" for ac in spec.acceptance_criteria]
     if spec.repro_steps:
         lines.append("- Tái hiện: " + " → ".join(spec.repro_steps))
+    if for_tests:
+        return "\n".join(lines) + "\n"
     if spec.assumptions:
         lines.append("\n### Giả định đã chốt (người duyệt plan đã thấy)")
         lines += [f"- {a}" for a in spec.assumptions]

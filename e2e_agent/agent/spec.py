@@ -7,6 +7,9 @@ from pathlib import Path
 import yaml
 
 TASK_TYPES = ("T1", "T2", "T3", "T4")
+#: Trần cứng cho tiêu đề commit/MR. Prompt xin `summary` ≤ 50; đây là lưới đỡ khi
+#: agent không nghe, vì lời dặn trong prompt không phải ràng buộc.
+TITLE_MAX = 60
 READY_KEYS = ("clear", "has_acceptance_criteria", "reproducible", "scoped",
               "deterministically_verifiable")
 T3_READY_KEYS = ("interface_specified", "ac_testable", "modules_declared")
@@ -34,6 +37,24 @@ class Spec:
     #: Thấy liên quan nhưng ticket không yêu cầu → KHÔNG làm. Implement bị cấm đụng.
     out_of_scope: list[str] = field(default_factory=list)
     source_ticket: str = ""
+    #: Một dòng ≤ 50 ký tự, dạng mệnh lệnh — tiêu đề commit và MR. Không có thì
+    #: `title` tự rút từ objective, cắt ở ranh giới từ.
+    summary: str = ""
+
+    @property
+    def title(self) -> str:
+        """Tiêu đề ngắn cho commit/MR. Không bao giờ cắt giữa chữ.
+
+        Cắt cả khi có `summary`: tin agent giữ đúng 50 ký tự là lại ra commit
+        subject dài bằng cả objective, đúng thứ `summary` sinh ra để tránh.
+        """
+        text = " ".join((self.summary or self.objective).split())
+        if len(text) <= TITLE_MAX:
+            return text
+        head = text[:TITLE_MAX]
+        if " " in head:
+            head = head[:head.rfind(" ")]
+        return head.rstrip(" ,;:.-") + "…"
 
     @property
     def ac_ids(self) -> list[str]:

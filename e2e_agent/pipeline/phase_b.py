@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import re
+import textwrap
 from pathlib import Path
 
 from ..agent import spec as spec_mod
@@ -127,8 +128,7 @@ def _fix_baseline_lint(ctx: RunContext, prof: Profile, work: Path, spec, base, a
     _, output = baseline_mod.lint_output(ctx, prof, work)
     prompt = (phase_a._skill("lint_fix") + phase_a._spec_block(spec)
               + f"\n## Kết quả lint hiện tại\n\n```\n{output}\n```\n"
-              + f"\n## Ràng buộc đường dẫn\n\nallowed_paths: {prof.allowed_paths}\n"
-                f"forbidden_paths: {prof.forbidden_paths}\n")
+              + phase_a._paths_block(prof))
     _ask(ctx, agent, work, "lint_fix", prompt)
     sha = sandbox.commit_all(work, "chore: sửa lint có sẵn trước khi sửa code")
     changed = gitutil.changed_files(work, base.base_sha)
@@ -170,7 +170,7 @@ def _test_first(ctx: RunContext, prof: Profile, work: Path, spec, plan: str, bas
              lines=len(tests_planned.splitlines()) if tests_planned else 0,
              level="info" if tests_planned else "warn",
              note=None if tests_planned else "plan không có mục 'Test sẽ viết' — agent chỉ có AC")
-    base_prompt = phase_a._skill("test_gen") + phase_a._spec_block(spec)
+    base_prompt = phase_a._skill("test_gen") + phase_a._spec_block(spec, for_tests=True)
     if tests_planned:
         base_prompt += f"\n## Test sẽ viết (người đã duyệt)\n\n{tests_planned}\n"
 
@@ -181,7 +181,7 @@ def _test_first(ctx: RunContext, prof: Profile, work: Path, spec, plan: str, bas
         prompt = base_prompt + (f"\n## Test vừa viết chưa đạt, sửa lại\n\n{feedback}\n"
                                 if feedback else "")
         _ask(ctx, agent, work, name, prompt)
-        sha = sandbox.commit_all(work, f"test: {spec.objective[:60]}"
+        sha = sandbox.commit_all(work, _commit_msg("test", spec)
                                  if attempt == 0 else f"test: viết lại (lần {attempt})")
         problem, new_failures, data = _run_testfirst(ctx, prof, work, base, is_t2)
         issues = [] if problem else antigaming.precheck_tests(
@@ -294,7 +294,7 @@ def _implement_loop(ctx: RunContext, prof: Profile, work: Path, spec, plan: str,
                      if feedback else ""))
         _ask(ctx, agent, work, f"implement{tag}-{attempt + 1}", prompt)
         evidence["self_fix"]["implement_rounds"] += 1
-        sandbox.commit_all(work, f"fix: {spec.objective[:60]}"
+        sandbox.commit_all(work, _commit_msg("fix", spec, plan)
                            if attempt == 0 and not tag else f"fix: vòng {attempt + 1}{tag}")
 
         gate_report = gate_mod.run(ctx, prof, work, base)
@@ -386,7 +386,7 @@ def _remediate(ctx: RunContext, prof: Profile, work: Path, spec, plan: str, base
     if antigaming.TEST_GEN in remedies or (is_t2 and remedies):
         # T2 chỉ có agent viết test, nên mọi việc sửa (kể cả hoàn nguyên file) là của nó.
         fb = antigaming.feedback(ag) if is_t2 else antigaming.feedback(ag, only={antigaming.TEST_GEN})
-        prompt = (phase_a._skill("test_gen") + phase_a._spec_block(spec)
+        prompt = (phase_a._skill("test_gen") + phase_a._spec_block(spec, for_tests=True)
                   + "\n## Bổ sung/sửa test theo kết quả kiểm tra\n\n"
                     "Test hiện có được giữ nguyên trừ khi phần dưới yêu cầu sửa. "
                     "Viết THÊM test để đáp ứng từng mục:\n\n" + fb + "\n")
@@ -436,7 +436,7 @@ def _create_mr(ctx, prof, work, ticket, spec, plan, base, gate_report, ag, evide
         task_type=spec.task_type, modules=spec.modules, acceptance_ids=spec.ac_ids)
     (ctx.run_dir / "mr-body.md").write_text(body, encoding="utf-8")
     forge.push_branch(work, branch)
-    mr = forge.create_mr(branch, prof.base_branch, f"[{ticket.id}] {spec.objective[:70]}",
+    mr = forge.create_mr(branch, prof.base_branch, f"[{ticket.id}] {spec.title}",
                            body, [MR_LABEL])
     ctx.emit("mr.created", url=mr.url, branch=branch, head_sha=head[:8],
              needs_review=ag["needs_review"])
@@ -444,7 +444,12 @@ def _create_mr(ctx, prof, work, ticket, spec, plan, base, gate_report, ag, evide
 
 
 def _mr_body(ticket, spec, plan, base, gate_report, ag, evidence, head, ctx, work) -> str:
-    """Mô tả MR theo skill bước 10: bằng chứng tự nói, không có câu "tôi tự tin rằng"."""
+    """Mô tả MR theo skill bước 10: bằng chứng tự nói, không có câu "tôi tự tin rằng".
+
+    Độ dài như một developer viết: cách giải + file đụng lấy từ plan, AC kèm test, hai
+    bảng bằng chứng, rủi ro, truy vết. KHÔNG dán nguyên plan — plan đã nằm trên ticket,
+    và dán vào là mọi mục Giả định/Ngoài phạm vi/Test/Rủi ro xuất hiện hai lần.
+    """
     checks = "\n".join(
         f"| {name} | {entry['status']} | {_check_note(entry)} |"
         for name, entry in gate_report["checks"].items())
@@ -452,10 +457,16 @@ def _mr_body(ticket, spec, plan, base, gate_report, ag, evidence, head, ctx, wor
         f"| {rule} | {_rule_icon(data['status'])} {data['status']} | {data['why']} |"
         for rule, data in ag["rules"].items())
     acs = "\n".join(f"- **{ac['id']}**: {ac['text']}" for ac in spec.acceptance_criteria)
-    assumed = "\n".join(f"- {a}" for a in spec.assumptions) or "- không"
-    skipped = "\n".join(f"- {o}" for o in spec.out_of_scope) or "- không"
+    warning = _plan_preamble(plan)
+    approach = _plan_section(plan, "cách giải") or spec.objective
+    files = _plan_section(plan, "file sẽ đụng")
     tests_written = _plan_section(plan, "test") or "_(plan không có mục 'Test sẽ viết')_"
-    risks = _plan_section(plan, "rủi ro") or "_(plan không nêu rủi ro)_"
+    risks = _plan_section(plan, "rủi ro") or "- không"
+    # Giả định/ngoài phạm vi: spec + phần plan bổ sung từ discovery (nếu có nội dung
+    # thật). `_dedup` chỉ bắt được bản chép y hệt — lưới chính là planning.md chỉ đòi
+    # mục "mới", đây là lưới hai khi agent vẫn chép cả mục cũ sang.
+    assumed = _dedup([*spec.assumptions, *_bullets(_plan_section(plan, "giả định"))])
+    skipped = _dedup([*spec.out_of_scope, *_bullets(_plan_section(plan, "ngoài phạm vi"))])
     pre_existing = gate_report["checks"].get("test", {}).get("pre_existing") or []
 
     review = ""
@@ -465,20 +476,19 @@ def _mr_body(ticket, spec, plan, base, gate_report, ag, evidence, head, ctx, wor
             f"`{json.dumps({k: v for k, v in ag['rules'][rule]['evidence'].items() if v}, ensure_ascii=False)[:300]}`"
             for rule in ag["needs_review"])
         review = f"""
-### ⚠️ Cần người review tự quyết
-
-Các luật dưới đây là heuristic, không tất định hoá được — không chặn MR, nhưng reviewer
-phải đọc:
+**⚠️ Cần người review tự quyết** (luật heuristic, không chặn MR):
 
 {rows}
 """
     fixes = evidence.get("self_fix", {})
-    fix_lines = [f"- Lượt implement: {fixes.get('implement_rounds', 0)}"]
+    fix_lines = []
     if fixes.get("lint"):
-        fix_lines.append(f"- Sửa lint có sẵn bằng commit riêng: `{evidence['lint_fix']['sha'][:12]}` "
+        fix_lines.append(f"- Sửa lint có sẵn bằng commit riêng `{evidence['lint_fix']['sha'][:12]}` "
                          f"({len(evidence['lint_fix']['files'])} file)")
     if fixes.get("testgen_rounds"):
         fix_lines.append(f"- Test viết lại theo tiền kiểm: {fixes['testgen_rounds']} lần")
+    if (n := fixes.get("implement_rounds", 0)) > 1:
+        fix_lines.append(f"- Lượt implement: {n}")
     if fixes.get("antigaming_rounds"):
         fix_lines.append(f"- Vòng khắc phục anti-gaming: {fixes['antigaming_rounds']}")
     if mut := evidence.get("mutation"):
@@ -486,69 +496,107 @@ phải đọc:
                          f"({mut.get('killed', 0)}/{mut.get('total', 0)})")
     try:
         stat = gitutil.diff_stat(work, base.base_sha, head)
-        stat_line = (f"{stat['files']} file, +{stat['insertions']}/−{stat['deletions']} dòng "
-                     f"(so với `{base.base_sha[:12]}`)")
+        changed = gitutil.changed_files(work, base.base_sha, head)
+        stat_line = f"{stat['files']} file, +{stat['insertions']}/−{stat['deletions']} dòng"
     except RuntimeError:
-        stat_line = "không đo được"
+        changed, stat_line = list(spec.modules), "không đo được"
 
-    return f"""## Vấn đề và cách giải
+    def section(title: str, body: str) -> str:
+        return f"## {title}\n\n{body}\n\n" if body.strip() else ""
 
-{spec.objective}
-
-{plan}
-
-## Giả định đã duyệt cùng plan
-
-{assumed}
-
-## Ngoài phạm vi (cố tình không làm)
-
-{skipped}
-
-## Acceptance criteria và test tương ứng
-
-{acs}
-
-**Test sẽ viết (đã duyệt):**
-
-{tests_written}
-
-## Bằng chứng gate
+    return (
+        (f"{warning}\n\n" if warning else "")
+        + f"## Cách giải\n\n{approach}\n\n"
+        + section("File đã đụng", files)
+        + f"## Acceptance criteria\n\n{acs}\n\n**Test:**\n\n{tests_written}\n\n"
+        + section("Giả định đã duyệt", "\n".join(f"- {a}" for a in assumed))
+        + section("Ngoài phạm vi (cố tình không làm)", "\n".join(f"- {o}" for o in skipped))
+        + f"""## Bằng chứng
 
 | Check | Kết quả | Ghi chú |
 |---|---|---|
 {checks}
 
 Baseline: {base.total} test, {len(base.failed_tests)} lỗi sẵn có, ổn định {base.runs}/{base.runs} lần.
-{f"PRE_EXISTING (bỏ qua, đã đỏ từ baseline): {', '.join(pre_existing[:10])}" if pre_existing else "Không có test PRE_EXISTING."}
+{f"PRE_EXISTING (đã đỏ từ baseline, bỏ qua): {', '.join(pre_existing[:10])}" if pre_existing else ""}
 
-## Anti-gaming
-
-| Luật | Kết quả | Ghi chú |
+| Anti-gaming | Kết quả | Ghi chú |
 |---|---|---|
 {rules}
 {review}
 ## Thay đổi
 
-- {stat_line}
-{chr(10).join(fix_lines)}
+{chr(10).join([f"- {stat_line}", *fix_lines])}
 
 ## Rủi ro và rollback
 
 {risks}
 
-Rollback: revert MR này; không có migration hay thay đổi ngoài `{spec.modules}`.
+Rollback: revert MR này. File đã đổi: {", ".join(f"`{f}`" for f in changed) or "—"}.
 
 ## Truy vết
 
-- Ticket chi tiết: {ticket.id}
-- Ticket gốc: {ticket.parent or "—"}
-- Commit cuối: `{head[:12]}`
-- Run: `{ctx.run_id}` — log đầy đủ trong `{ctx.run_dir}/events.jsonl`
+Ticket {ticket.id} (gốc {ticket.parent or "—"}) · commit `{head[:12]}` · run `{ctx.run_id}` (`{ctx.run_dir}/events.jsonl`)
 
 ---
 *MR do agent tạo. Gate và anti-gaming là script tất định, CI chạy lại toàn bộ trên MR này.*
-"""
+""")
+
+
+def _bullets(text: str) -> list[str]:
+    """Các dòng `- ...` có nội dung thật; `- không`/`- (không có)` coi là rỗng."""
+    out = []
+    for raw in (text or "").splitlines():
+        # Cắt đúng MỘT dấu gạch đầu dòng. `lstrip("-* ")` cắt theo tập ký tự nên
+        # `- **Mới từ discovery:**` ra `Mới từ discovery:**` — mất dấu mở đậm.
+        m = _BULLET.match(raw.strip())
+        if not m:
+            continue
+        item = m.group(1).strip()
+        if item and item.lower().strip("()") not in ("không", "không có", "none"):
+            out.append(item)
+    return out
+
+
+def _dedup(items: list[str]) -> list[str]:
+    """Giữ thứ tự, bỏ trùng y hệt. Plan chép lại giả định của spec là chuyện đã xảy ra."""
+    return list(dict.fromkeys(i.strip() for i in items if i and i.strip()))
+
+
+def _plan_preamble(plan: str) -> str:
+    """Dòng `⚠` planning.md dặn đặt TRƯỚC mọi heading, hoặc "".
+
+    MR dựng theo heading nên dòng này rơi mất — đúng chỗ reviewer cần nó nhất:
+    nó là câu "AC-x không đạt được trong allowed_paths".
+    """
+    head = _HEADING.search(plan or "")
+    text = (plan[:head.start()] if head else (plan or "")).strip()
+    return text if text.startswith("⚠") else ""
+
+
+def _one_sentence(text: str, limit: int = 200) -> str:
+    """Câu đầu của một đoạn, cắt ở ranh giới từ nếu quá dài."""
+    text = " ".join((text or "").split())
+    if not text:
+        return ""
+    head = re.split(r"(?<=[.!?])\s", text, maxsplit=1)[0]
+    if len(head) <= limit or " " not in head[:limit]:
+        return head[:limit]
+    return head[:limit][:head[:limit].rfind(" ")].rstrip(" ,;:.-") + "…"
+
+
+def _commit_msg(prefix: str, spec, plan: str = "") -> str:
+    """Subject ngắn, một câu vì sao, mã ticket — dài như dev viết tay.
+
+    `plan` bỏ trống ở commit test: vòng viết lại sau đọc được `git log`, mà
+    "Cách giải" là đúng thứ bước test-first không được thấy (skill bước 6).
+    """
+    parts = [f"{prefix}: {spec.title}"]
+    if why := (_one_sentence(_plan_section(plan, "cách giải")) if plan else ""):
+        parts.append(textwrap.fill(why, width=72))
+    if spec.task_id:
+        parts.append(spec.task_id)
+    return "\n\n".join(parts)
 
 
 def _check_note(entry: dict) -> str:
@@ -569,6 +617,7 @@ def _rule_icon(status: str) -> str:
 
 
 _HEADING = re.compile(r"^#{1,6}\s*(.+?)\s*$", re.MULTILINE)
+_BULLET = re.compile(r"^[-*]\s+(.*)$")
 
 
 def _plan_section(plan: str, keyword: str) -> str:
@@ -581,8 +630,4 @@ def _plan_section(plan: str, keyword: str) -> str:
     return ""
 
 
-def _ask(ctx, agent, cwd, name, prompt):
-    result = agent.run(ctx, prompt, cwd, name)
-    if not result.ok:
-        ctx.decide(Reason.ERROR, f"agent {name} lỗi: {result.error}", agent=name)
-    return result
+_ask = phase_a._ask
