@@ -1,6 +1,7 @@
 """Hồ sơ repo — file DUY NHẤT chứa tri thức về một dự án cụ thể (nguyên tắc N-1)."""
 from __future__ import annotations
 
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -182,7 +183,11 @@ def doctor(p: Profile, repo: Path, package_root: Path | None = None) -> list[tup
             out.append((f"check {name}", True, f"out_of_scope — {p.reason(name)}"))
             continue
         cmd = p.commands.get(name, "")
-        tool = cmd.split()[0] if cmd else ""
+        tokens = cmd.split()
+        env_assign = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+        while tokens and env_assign.match(tokens[0]):
+            tokens.pop(0)
+        tool = tokens[0] if tokens else ""
         found = bool(tool) and (shutil.which(tool) is not None or tool in ("python", "python3"))
         out.append((f"check {name}", found, cmd if found else f"không thấy lệnh {tool!r} trong PATH"))
 
