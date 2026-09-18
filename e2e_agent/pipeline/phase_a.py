@@ -4,6 +4,7 @@ Phase này chỉ đọc; không dòng code nào bị sửa.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from ..agent import spec as spec_mod
@@ -14,6 +15,16 @@ from ..core.run import RunContext
 from ..tracker.base import Ticket
 
 SKILLS = Path(__file__).resolve().parents[1] / "skills"
+
+#: Từ khoá cắt mục của plan. Đây là HỢP ĐỒNG với `skills/planning.md`:
+#: `_plan_section` tìm heading CHỨA chuỗi này, nên đổi tên mục bên skill mà quên ở
+#: đây là mục đó lặng lẽ biến mất khỏi mô tả MR. Đổi thì đổi cả hai chỗ.
+SEC_APPROACH = "giải pháp"
+SEC_FILES = "file"
+SEC_TESTS = "test"
+SEC_ASSUMPTIONS = "giả định"
+SEC_OUT_OF_SCOPE = "ngoài phạm vi"
+SEC_RISKS = "rủi ro"
 #: planning.md dặn plan ≤ 40 dòng. Quá xa mức đó thì agent đang phớt lờ ràng buộc,
 #: và plan dài là thứ chảy thẳng vào mô tả MR — nói ra trong log thay vì im lặng.
 PLAN_MAX_LINES = 60
@@ -70,10 +81,11 @@ def run(ctx: RunContext, prof: Profile, repo: Path, ticket: Ticket, agent,
                   + f"\n## Kết quả discovery\n\n{discovery}\n"
                   + _paths_block(prof) + rejected_block)
         result = _ask(ctx, agent, repo, "planning", prompt)
-        plan = result.text
+        plan, dropped = _tidy_plan(result.text)
         (ctx.run_dir / "plan.md").write_text(plan, encoding="utf-8")
         long_plan = len(plan.splitlines()) > PLAN_MAX_LINES
         ctx.emit("planning.ready", chars=len(plan), lines=len(plan.splitlines()),
+                 dropped_sections=dropped,
                  level="warn" if long_plan else "info",
                  note=f"plan dài hơn {PLAN_MAX_LINES} dòng — prompt dặn ≤ 40"
                       if long_plan else None)
@@ -168,6 +180,58 @@ def _mode_block(mode: str) -> str:
 def _paths_block(prof: Profile) -> str:
     return (f"\n## Ràng buộc đường dẫn\n\nallowed_paths: {prof.allowed_paths}\n"
             f"forbidden_paths: {prof.forbidden_paths}\n")
+
+
+_HEADING = re.compile(r"^#{1,6}\s*(.+?)\s*$", re.MULTILINE)
+_BULLET = re.compile(r"^[-*]\s+(.*)$")
+
+
+def _plan_section(plan: str, keyword: str) -> str:
+    """Nội dung mục có heading chứa `keyword` (không phân biệt hoa thường), hoặc ""."""
+    heads = list(_HEADING.finditer(plan or ""))
+    for i, m in enumerate(heads):
+        if keyword.lower() in m.group(1).lower():
+            end = heads[i + 1].start() if i + 1 < len(heads) else len(plan)
+            return plan[m.end():end].strip()
+    return ""
+
+
+def _bullets(text: str) -> list[str]:
+    """Các dòng `- ...` có nội dung thật; `- không`/`- (không có)` coi là rỗng."""
+    out = []
+    for raw in (text or "").splitlines():
+        # Cắt đúng MỘT dấu gạch đầu dòng. `lstrip("-* ")` cắt theo tập ký tự nên
+        # `- **Mới từ discovery:**` ra `Mới từ discovery:**` — mất dấu mở đậm.
+        m = _BULLET.match(raw.strip())
+        if not m:
+            continue
+        item = m.group(1).strip()
+        if item and item.lower().strip("()") not in ("không", "không có", "none"):
+            out.append(item)
+    return out
+
+
+def _tidy_plan(plan: str) -> tuple[str, int]:
+    """Bỏ những mục chỉ chứa `- không`. Trả về (plan, số mục đã bỏ).
+
+    planning.md đã dặn bỏ hẳn mục trống, nhưng plan là thứ người phải đọc để duyệt —
+    không nên phụ thuộc vào việc agent nhớ lời dặn. Mục chỉ có văn xuôi (Giải pháp)
+    giữ nguyên; chỉ mục toàn gạch đầu dòng mà không dòng nào có nội dung mới bị bỏ.
+    """
+    heads = list(_HEADING.finditer(plan or ""))
+    if not heads:
+        return (plan or "").strip(), 0
+    keep, dropped = [], 0
+    for i, m in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(plan)
+        body = plan[m.end():end]
+        lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
+        if lines and all(_BULLET.match(ln) for ln in lines) and not _bullets(body):
+            dropped += 1
+            continue
+        keep.append(plan[m.start():end].rstrip())
+    preamble = plan[:heads[0].start()].strip()
+    return "\n\n".join(([preamble] if preamble else []) + keep) + "\n", dropped
 
 
 def _ticket_block(ticket: Ticket) -> str:

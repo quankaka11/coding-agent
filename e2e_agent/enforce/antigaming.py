@@ -312,7 +312,7 @@ def g10_plan_scope(c: Context) -> RuleResult:
     lời dặn thì agent đọc xong có thể bỏ qua — đúng thứ mà ranh giới skill/script
     nói là không được tin.
 
-    Phạm vi lấy từ `scope.modules` trong spec, không parse mục "File sẽ đụng" của
+    Phạm vi lấy từ `scope.modules` trong spec, không parse mục "File sẽ thay đổi" của
     plan: spec là dữ liệu có cấu trúc, markdown thì không.
     """
     if c.prof.conventions.get("enforce_plan_scope") is False:

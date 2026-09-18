@@ -191,7 +191,7 @@ class Orchestrator:
             self.tracker.notify(ticket.id, _notice(ticket))
             self._announce(ctx, PLAN_READY, "Plan chờ duyệt", ticket,
                            f"**{ticket.title}**\n\nĐổi category sang `{L.PLAN_APPROVED}` để duyệt, "
-                           f"hoặc `{L.PLAN_REJECTED}` kèm comment lý do.\nChưa dòng code nào bị sửa.")
+                           f"hoặc `{L.PLAN_REJECTED}` kèm comment lý do.\nChưa có dòng code nào được thay đổi.")
             ctx.decide(Reason.OK, "plan đã sẵn sàng, chờ người duyệt",
                        label=L.PLAN_READY, base_sha=base_sha[:8])
         return ctx.outcome
@@ -424,16 +424,21 @@ def _stale_files(repo: Path, base: str, tip: str, modules: list[str]) -> list[st
 
 
 def _plan_comment(plan: str, spec, base_sha: str) -> str:
-    assumed = "\n".join(f"- {a}" for a in spec.assumptions) or "- (ticket đủ rõ, không có)"
-    skipped = "\n".join(f"- {o}" for o in spec.out_of_scope) or "- (không có)"
-    return (f"## Plan chờ duyệt\n\n**Chưa dòng code nào được sửa.**\n\n"
-            f"- Loại task: `{spec.task_type}`\n- Phạm vi: `{spec.modules}`\n"
+    # Khối rỗng thì bỏ hẳn, không in "(không có)": đây là thứ người phải đọc để
+    # quyết duyệt hay không, mỗi dòng thừa là một dòng họ đọc để biết là không có gì.
+    blocks = "".join(
+        f"**{title}**\n" + "\n".join(f"- {x}" for x in items) + "\n\n"
+        for title, items in (
+            ("Các giả định Agent đã tự chốt", spec.assumptions),
+            ("Đã thấy nhưng KHÔNG thực hiện (ngoài ticket)", spec.out_of_scope))
+        if items)
+    modules = ", ".join(f"`{m}`" for m in spec.modules) or "—"
+    return (f"## Plan chờ duyệt\n\n**Chưa có dòng code nào được thay đổi.**\n\n"
+            f"- Loại task: `{spec.task_type}`\n- Phạm vi thay đổi: {modules}\n"
             f"- Base commit: `{base_sha[:12]}`\n\n"
-            f"**Agent đã tự chốt các giả định sau thay vì hỏi lại — sai thì từ chối plan kèm "
-            f"câu trả lời:**\n{assumed}\n\n"
-            f"**Thấy nhưng KHÔNG làm (ngoài ticket):**\n{skipped}\n\n---\n\n{plan}\n\n---\n\n"
-            f"**Duyệt:** đổi label sang `{L.PLAN_APPROVED}`.\n"
-            f"**Từ chối:** đổi label sang `{L.PLAN_REJECTED}` kèm comment lý do "
+            f"{blocks}---\n\n{plan}\n\n---\n\n"
+            f"**Phê duyệt:** đổi label sang `{L.PLAN_APPROVED}`.\n"
+            f"**Từ chối kế hoạch:** đổi label sang `{L.PLAN_REJECTED}` kèm comment lý do "
             f"(quá {MAX_REJECTS} lần từ chối thì ticket chuyển `{L.NO_MR}`).")
 
 

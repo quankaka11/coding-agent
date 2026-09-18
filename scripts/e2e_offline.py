@@ -142,7 +142,7 @@ def main():
         return "đã sửa src/broken.py"
 
     agent = StubAgent({"intake": lambda cwd: SPEC, "discovery": lambda cwd: "## File liên quan\n- src/cart.py",
-                       "planning": lambda cwd: "## Cách giải\nNhân quantity.\n## File sẽ đụng\n- src/cart.py\n"
+                       "planning": lambda cwd: "## Giải pháp\nNhân quantity.\n## File sẽ thay đổi\n- src/cart.py\n"
                                                "## Test sẽ viết\n- tests/test_cart_qty.py::test_quantity — AC-1\n"
                                                "## Rủi ro\n- không",
                        "test_gen": test_gen, "implement": implement, "lint_fix": lint_fix})

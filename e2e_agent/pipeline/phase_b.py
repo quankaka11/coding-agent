@@ -163,9 +163,9 @@ def _test_first(ctx: RunContext, prof: Profile, work: Path, spec, plan: str, bas
     Trả về sha đóng băng (mốc G-9).
     """
     # Agent viết test KHÔNG được thấy cách giải: chỉ AC (trong spec) và mục "Test sẽ
-    # viết" mà người đã duyệt. Thấy "File sẽ đụng"/"Cách giải" là test chép lại
+    # viết" mà người đã duyệt. Thấy "File sẽ thay đổi"/"Giải pháp" là test chép lại
     # đúng giả định của implement.
-    tests_planned = _plan_section(plan, "test")
+    tests_planned = _plan_section(plan, phase_a.SEC_TESTS)
     ctx.emit("plan.handed", to="test_gen", section="Test sẽ viết" if tests_planned else None,
              lines=len(tests_planned.splitlines()) if tests_planned else 0,
              level="info" if tests_planned else "warn",
@@ -458,15 +458,15 @@ def _mr_body(ticket, spec, plan, base, gate_report, ag, evidence, head, ctx, wor
         for rule, data in ag["rules"].items())
     acs = "\n".join(f"- **{ac['id']}**: {ac['text']}" for ac in spec.acceptance_criteria)
     warning = _plan_preamble(plan)
-    approach = _plan_section(plan, "cách giải") or spec.objective
-    files = _plan_section(plan, "file sẽ đụng")
-    tests_written = _plan_section(plan, "test") or "_(plan không có mục 'Test sẽ viết')_"
-    risks = _plan_section(plan, "rủi ro") or "- không"
+    approach = _plan_section(plan, phase_a.SEC_APPROACH) or spec.objective
+    files = _plan_section(plan, phase_a.SEC_FILES)
+    tests_written = _plan_section(plan, phase_a.SEC_TESTS) or "_(plan không có mục 'Test sẽ viết')_"
+    risks = _plan_section(plan, phase_a.SEC_RISKS) or "- không"
     # Giả định/ngoài phạm vi: spec + phần plan bổ sung từ discovery (nếu có nội dung
     # thật). `_dedup` chỉ bắt được bản chép y hệt — lưới chính là planning.md chỉ đòi
     # mục "mới", đây là lưới hai khi agent vẫn chép cả mục cũ sang.
-    assumed = _dedup([*spec.assumptions, *_bullets(_plan_section(plan, "giả định"))])
-    skipped = _dedup([*spec.out_of_scope, *_bullets(_plan_section(plan, "ngoài phạm vi"))])
+    assumed = _dedup([*spec.assumptions, *_bullets(_plan_section(plan, phase_a.SEC_ASSUMPTIONS))])
+    skipped = _dedup([*spec.out_of_scope, *_bullets(_plan_section(plan, phase_a.SEC_OUT_OF_SCOPE))])
     pre_existing = gate_report["checks"].get("test", {}).get("pre_existing") or []
 
     review = ""
@@ -506,11 +506,11 @@ def _mr_body(ticket, spec, plan, base, gate_report, ag, evidence, head, ctx, wor
 
     return (
         (f"{warning}\n\n" if warning else "")
-        + f"## Cách giải\n\n{approach}\n\n"
-        + section("File đã đụng", files)
+        + f"## Giải pháp\n\n{approach}\n\n"
+        + section("File đã thay đổi", files)
         + f"## Acceptance criteria\n\n{acs}\n\n**Test:**\n\n{tests_written}\n\n"
         + section("Giả định đã duyệt", "\n".join(f"- {a}" for a in assumed))
-        + section("Ngoài phạm vi (cố tình không làm)", "\n".join(f"- {o}" for o in skipped))
+        + section("Ngoài phạm vi (cố tình không thực hiện)", "\n".join(f"- {o}" for o in skipped))
         + f"""## Bằng chứng
 
 | Check | Kết quả | Ghi chú |
@@ -541,21 +541,6 @@ Ticket {ticket.id} (gốc {ticket.parent or "—"}) · commit `{head[:12]}` · r
 ---
 *MR do agent tạo. Gate và anti-gaming là script tất định, CI chạy lại toàn bộ trên MR này.*
 """)
-
-
-def _bullets(text: str) -> list[str]:
-    """Các dòng `- ...` có nội dung thật; `- không`/`- (không có)` coi là rỗng."""
-    out = []
-    for raw in (text or "").splitlines():
-        # Cắt đúng MỘT dấu gạch đầu dòng. `lstrip("-* ")` cắt theo tập ký tự nên
-        # `- **Mới từ discovery:**` ra `Mới từ discovery:**` — mất dấu mở đậm.
-        m = _BULLET.match(raw.strip())
-        if not m:
-            continue
-        item = m.group(1).strip()
-        if item and item.lower().strip("()") not in ("không", "không có", "none"):
-            out.append(item)
-    return out
 
 
 def _dedup(items: list[str]) -> list[str]:
@@ -589,10 +574,10 @@ def _commit_msg(prefix: str, spec, plan: str = "") -> str:
     """Subject ngắn, một câu vì sao, mã ticket — dài như dev viết tay.
 
     `plan` bỏ trống ở commit test: vòng viết lại sau đọc được `git log`, mà
-    "Cách giải" là đúng thứ bước test-first không được thấy (skill bước 6).
+    "Giải pháp" là đúng thứ bước test-first không được thấy (skill bước 6).
     """
     parts = [f"{prefix}: {spec.title}"]
-    if why := (_one_sentence(_plan_section(plan, "cách giải")) if plan else ""):
+    if why := (_one_sentence(_plan_section(plan, phase_a.SEC_APPROACH)) if plan else ""):
         parts.append(textwrap.fill(why, width=72))
     if spec.task_id:
         parts.append(spec.task_id)
@@ -616,18 +601,8 @@ def _rule_icon(status: str) -> str:
     return {"pass": "✅", "fail": "❌", "needs_review": "⚠️", "out_of_scope": "⊘"}.get(status, "")
 
 
-_HEADING = re.compile(r"^#{1,6}\s*(.+?)\s*$", re.MULTILINE)
-_BULLET = re.compile(r"^[-*]\s+(.*)$")
-
-
-def _plan_section(plan: str, keyword: str) -> str:
-    """Nội dung mục có heading chứa `keyword` (không phân biệt hoa thường), hoặc ""."""
-    heads = list(_HEADING.finditer(plan or ""))
-    for i, m in enumerate(heads):
-        if keyword.lower() in m.group(1).lower():
-            end = heads[i + 1].start() if i + 1 < len(heads) else len(plan)
-            return plan[m.end():end].strip()
-    return ""
-
-
+_HEADING = phase_a._HEADING
+_BULLET = phase_a._BULLET
+_plan_section = phase_a._plan_section
+_bullets = phase_a._bullets
 _ask = phase_a._ask

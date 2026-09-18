@@ -62,5 +62,9 @@ ticket. Hai mục đó phải đủ để người sửa ticket mà không cần
 
 ## Quy tắc YAML
 
+**Viết tiếng Việt có dấu.** Spec này người duyệt đọc, không phải log máy. File lưu
+UTF-8: dấu không làm gãy YAML, thứ làm gãy là `: ` chưa bọc nháy — nên đừng bỏ dấu
+cho "an toàn".
+
 **Mọi giá trị text đặt trong nháy đơn** — text mô tả code hay chứa `: ` làm YAML gãy.
 Nháy đơn bên trong viết thành `''`. Đúng: `text: 'cart_total([{''price'': 1}]) raise ValueError'`.

@@ -21,7 +21,7 @@ spec, không dẫn số dòng code trừ khi đó là cách duy nhất chỉ ch�
 ## Lưu ý về mục "Test sẽ viết"
 
 Đây là **mục duy nhất** của plan mà agent viết test được nhìn thấy (cùng với acceptance
-criteria). Agent đó không thấy "Cách giải" hay "File sẽ đụng" — cố ý, để test không
+criteria). Agent đó không thấy "Giải pháp" hay "File sẽ thay đổi" — cố ý, để test không
 chép lại giả định của cách sửa. Vì vậy mỗi dòng phải tự đứng được: nodeid, hành vi kiểm,
 giá trị mong đợi, AC nào — và **chỉ** từng đó. Đừng ghi vào mục này tên file/dòng sẽ
 sửa hay "fail vì code đang làm X": đó là cách giải, rò sang là hỏng đúng cái mục này
@@ -31,25 +31,26 @@ cắt theo heading.
 ## Đầu ra
 
 ```markdown
-## Cách giải
+## Giải pháp
 <1-3 câu: vấn đề nằm ở đâu, sửa theo hướng nào>
 
-## File sẽ đụng
+## File sẽ thay đổi
 - `đường/dẫn.py` — sửa gì
 
 ## Test sẽ viết
 - `tests/...::test_ten` — kiểm gì, giá trị mong đợi; vì sao fail trên code hiện tại (AC-x)
 
-## Giả định mới
+## Giả định phát sinh
 - <CHỈ giả định phát sinh từ discovery, chưa có trong spec — người duyệt bác được từng dòng>
 
-## Ngoài phạm vi mới
+## Ngoài phạm vi phát sinh
 - <CHỈ thứ discovery thấy liên quan mà spec chưa liệt kê>
 
 ## Rủi ro
 - <điều có thể vỡ — cách phát hiện>
 ```
 
-`## Giả định mới` và `## Ngoài phạm vi mới` **bắt buộc có**, ghi `- không` nếu trống;
-phần đã có trong spec hệ thống tự in kèm, không chép lại. Task cần thứ tự làm thì đánh
-số ngay trong "File sẽ đụng", không thêm mục riêng.
+`## Giả định phát sinh` và `## Ngoài phạm vi phát sinh`: không có gì mới thì **bỏ hẳn mục đó** —
+đừng ghi `- không`, một mục rỗng vẫn là một mục người duyệt phải đọc để biết là rỗng.
+Phần đã có trong spec hệ thống tự in kèm, không chép lại. Task cần thứ tự làm thì đánh
+số ngay trong "File sẽ thay đổi", không thêm mục riêng.
