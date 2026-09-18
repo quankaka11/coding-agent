@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from .log import EventLog, tail
-from .reasons import LABEL, Reason, explain
+from .reasons import LABEL, Kind, Reason, explain
 
 
 class Decided(Exception):
@@ -62,7 +62,12 @@ class RunContext:
         self.cost_usd = 0.0
         self.outcome: Reason | None = None
         self.outcome_label: str | None = None
+        self.outcome_kind: str | None = None
         self.outcome_why: str = ""
+        #: Label đặt lên ticket GỐC khi run này là của ticket chi tiết. None = giống
+        #: ticket chi tiết. Dùng khi kết cục đòi ticket gốc đi đường khác (plan lạc
+        #: hậu → gốc quay về `agent:try` để agent lập plan lại).
+        self.parent_label: str | None = None
         self._finish_hooks: list[Callable[["RunContext"], None]] = []
 
     # -- sự kiện ---------------------------------------------------------
@@ -120,27 +125,32 @@ class RunContext:
     def check_budget(self) -> None:
         elapsed_min = (time.monotonic() - self.started) / 60
         if elapsed_min > self.timeout_min:
-            self.decide(Reason.HUMAN_BUDGET, f"vượt trần thời gian {self.timeout_min} phút",
-                        elapsed_min=round(elapsed_min, 1))
+            self.decide(Reason.NEEDS_HUMAN, f"vượt trần thời gian {self.timeout_min} phút",
+                        kind=Kind.BUDGET, elapsed_min=round(elapsed_min, 1))
         if self.cost_usd > self.cost_cap_usd:
-            self.decide(Reason.HUMAN_BUDGET, f"vượt trần chi phí {self.cost_cap_usd} USD",
-                        cost_usd=self.cost_usd)
+            self.decide(Reason.NEEDS_HUMAN, f"vượt trần chi phí {self.cost_cap_usd} USD",
+                        kind=Kind.BUDGET, cost_usd=self.cost_usd)
 
     # -- kết cục ---------------------------------------------------------
-    def decide(self, reason: Reason, why: str, *, label: str | None = None, **data: Any) -> None:
+    def decide(self, reason: Reason, why: str, *, kind: Kind | str | None = None,
+               label: str | None = None, **data: Any) -> None:
         """Chốt kết cục và thoát pipeline. Đây là lối ra duy nhất được phép.
 
-        `label` ghi đè nhãn mặc định cho các bước kết thúc giữa chừng —
-        Phase A xong là `agent:plan-ready`, chưa phải `agent:mr-created`.
+        `kind` là chi tiết vì sao (Kind) — bắt buộc với NO_MR/NEEDS_HUMAN để metric và
+        comment ticket còn phân biệt được. `label` ghi đè nhãn mặc định cho các bước
+        kết thúc giữa chừng — Phase A xong là `agent:plan-ready`, chưa phải `agent:mr-created`.
         """
         if self.outcome is not None:
             raise RuntimeError(f"run đã chốt {self.outcome.value}, không được chốt lại")
+        if reason is Reason.ERROR and kind is None:
+            kind = Kind.SYSTEM
         self.outcome = reason
         self.outcome_label = label or LABEL[reason]
+        self.outcome_kind = str(kind.value if isinstance(kind, Kind) else kind) if kind else None
         self.outcome_why = why
-        level = "info" if reason is Reason.OK else "warn" if reason.name.startswith("NOMR_") else "error"
-        self.emit("decision", level=level, reason=reason.value, label=self.outcome_label,
-                  why=why, meaning=explain(reason), **data)
+        level = "info" if reason is Reason.OK else "warn" if reason is Reason.NO_MR else "error"
+        self.emit("decision", level=level, reason=reason.value, kind=self.outcome_kind,
+                  label=self.outcome_label, why=why, meaning=explain(reason, kind), **data)
         raise Decided(reason, why)
 
     def on_finish(self, hook: Callable[["RunContext"], None]) -> None:
@@ -156,8 +166,9 @@ class RunContext:
         if self.outcome is None:
             self.outcome = Reason.ERROR
             self.outcome_label = LABEL[Reason.ERROR]
+            self.outcome_kind = Kind.SYSTEM.value
             self.outcome_why = "run kết thúc mà không chốt kết cục (vi phạm N-3)"
-            self.emit("decision", level="error", reason=Reason.ERROR.value,
+            self.emit("decision", level="error", reason=Reason.ERROR.value, kind=self.outcome_kind,
                       label=self.outcome_label, why="run kết thúc mà không chốt kết cục (vi phạm N-3)")
         for hook in self._finish_hooks:
             # Hook hỏng không được cướp mất run.end: mất dòng đó là mất luôn run
@@ -169,11 +180,12 @@ class RunContext:
                           error=f"{type(exc).__name__}: {exc}")
         elapsed = int((time.monotonic() - self.started) * 1000)
         label = self.outcome_label or LABEL[self.outcome]
-        self.emit("run.end", reason=self.outcome.value, label=label,
+        self.emit("run.end", reason=self.outcome.value, kind=self.outcome_kind, label=label,
                   duration_ms=elapsed, cost_usd=round(self.cost_usd, 4))
         (self.run_dir / "outcome.json").write_text(json.dumps(
             {"run_id": self.run_id, "task_id": self.task_id, "reason": self.outcome.value,
-             "label": label, "why": self.outcome_why, "duration_ms": elapsed},
+             "kind": self.outcome_kind, "label": label, "why": self.outcome_why,
+             "duration_ms": elapsed},
             ensure_ascii=False, indent=2),
             encoding="utf-8")
         self.log.close()

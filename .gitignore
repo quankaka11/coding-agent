@@ -1,15 +1,43 @@
-docs/
-tests/
+# --- Python ---
 __pycache__/
+*.py[cod]
 *.egg-info/
-.pytest_cache/
-.ruff_cache/
-runs/
-work/
 dist/
 build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- Virtualenv ---
 .venv/
-.env
-repos/
+venv/
 venvs/
+
+# --- Secret ---
+.env
+.env.*
+!.env.example
+
+# --- Dữ liệu vận hành của agent (mọi thứ dưới --dir) ---
+repos/
+work/
+runs/
+
+# --- Artefact test/coverage nếu chạy tay ngoài runs/ ---
+.coverage
+.coverage.*
+coverage.json
+htmlcov/
+*-junit.xml
+
+# --- IDE / tool cục bộ ---
 .idea/
+.vscode/
+.claude/settings.local.json
+*.log
+.DS_Store
+
+# --- Chưa đưa vào git (xem README: docs/, tests/ và references/ được link tới) ---
+docs/
+tests/
+references/

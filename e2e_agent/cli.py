@@ -19,7 +19,7 @@ from .pipeline.orchestrator import Orchestrator
 from .pipeline.watcher import Watcher
 from .tracker import base as L
 from .config.profile import ProfileError
-from .core.reasons import LABEL, Reason
+from .core.reasons import LABEL, Kind, Reason
 from .core.run import Decided, RunContext, run_context
 
 RUNS_DIR = Path("runs")
@@ -71,7 +71,7 @@ def cmd_gate(args) -> int:
         with ctx.stage("gate"):
             rep = gate_mod.run(ctx, prof, repo, base)
         if rep["verdict"] == "FAIL":
-            ctx.decide(Reason.NOMR_GATE_FAIL, f"gate fail: {', '.join(rep['failed_checks'])}")
+            ctx.decide(Reason.NO_MR, f"gate fail: {', '.join(rep['failed_checks'])}", kind=Kind.GATE_FAIL)
         ctx.decide(Reason.OK, "gate PASS")
     return _exit(ctx)
 
@@ -93,8 +93,10 @@ def cmd_antigaming(args) -> int:
             rep = antigaming.run(ctx, prof, repo, base_sha, base, task_type=args.task_type,
                                  acceptance_ids=args.ac or [], modules=args.modules or [])
         if rep["verdict"] == "FAIL":
-            ctx.decide(Reason.HUMAN_ANTIGAMING, f"vi phạm: {', '.join(rep['failed_rules'])}")
-        ctx.decide(Reason.OK, "anti-gaming PASS")
+            reason, why, kind = _antigaming_reason(rep)
+            ctx.decide(reason, why, kind=kind, blocking_rules=rep["blocking_rules"],
+                       needs_review=rep["needs_review"])
+        ctx.decide(Reason.OK, "anti-gaming PASS", needs_review=rep["needs_review"])
     return _exit(ctx)
 
 
@@ -139,10 +141,15 @@ def cmd_check(args) -> int:
             ag = antigaming.run(ctx, prof, repo, base_sha, base, rep,
                                 task_type=task_type, acceptance_ids=acs, modules=modules)
         if ag["verdict"] == "FAIL":
-            ctx.decide(Reason.HUMAN_ANTIGAMING, f"vi phạm: {', '.join(ag['failed_rules'])}")
+            reason, why, kind = _antigaming_reason(ag)
+            ctx.decide(reason, why, kind=kind, blocking_rules=ag["blocking_rules"],
+                       needs_review=ag["needs_review"])
+        if rep.get("flaky"):
+            ctx.decide(Reason.NEEDS_HUMAN, f"test không nhất quán: {', '.join(rep['flaky'][:5])}",
+                       kind=Kind.FLAKY)
         if rep["verdict"] == "FAIL":
-            ctx.decide(Reason.NOMR_GATE_FAIL, f"gate fail: {', '.join(rep['failed_checks'])}")
-        ctx.decide(Reason.OK, "gate PASS và anti-gaming PASS")
+            ctx.decide(Reason.NO_MR, f"gate fail: {', '.join(rep['failed_checks'])}", kind=Kind.GATE_FAIL)
+        ctx.decide(Reason.OK, "gate PASS và anti-gaming PASS", needs_review=ag["needs_review"])
     return _exit(ctx)
 
 
@@ -154,7 +161,9 @@ _ENV_HELP = """Cần trong .env (tại thư mục đang chạy) hoặc biến m�
   backlog_space=xxx.backlog.com                      # thiếu cả hai dòng backlog → ticket trên đĩa (offline)
   backlog_project=PROJKEY
   backlog_api_key=...
-  google_chat_webhook=https://chat.googleapis.com/... # tuỳ chọn"""
+  google_chat_webhook=https://chat.googleapis.com/... # tuỳ chọn
+  agent_model=opus                                   # tuỳ chọn: alias hoặc tên đầy đủ, ghi đè agent.model
+  agent_effort=high                                  # tuỳ chọn: low|medium|high|xhigh|max, ghi đè agent.effort"""
 
 
 def _layout(args) -> dict:
@@ -194,7 +203,7 @@ def _prepare_env(args, lay: dict) -> tuple[str, list[str]]:
     """venv + dependency của repo. Trả về (python dùng trong commands.*, TODO chưa xong).
 
     TODO ở đây phải CHẶN `up`: môi trường test hỏng thì mọi ticket đều kết thúc
-    NOMR_BASELINE_RED, và người vận hành đọc ra là "repo đỏ" chứ không phải "venv sai".
+    NO_MR/baseline_red, và người vận hành đọc ra là "repo đỏ" chứ không phải "venv sai".
     """
     from .config import autoprofile
     if args.no_venv:
@@ -360,7 +369,7 @@ def cmd_new_ticket(args) -> int:
     _, tracker = _orchestrator(args, prof, Path(args.repo).resolve())
     body = Path(args.file).read_text(encoding="utf-8") if args.file else (args.body or "")
     if not body.strip():
-        print("cần --file hoặc --body: ticket không có mô tả thì Intake sẽ trả NOMR_NOT_READY",
+        print("cần --file hoặc --body: ticket không có mô tả thì Intake sẽ trả NO_MR/not_ready",
               file=sys.stderr)
         return 2
     ticket = tracker.create_ticket(args.title, body, [args.label])
@@ -444,6 +453,15 @@ def _exit(ctx: RunContext) -> int:
     """0 khi OK, 1 khi NO_MR, 2 khi cần người. Exit code là hợp đồng với CI."""
     print(f"run dir: {ctx.run_dir}", file=sys.stderr)
     return {"agent:mr-created": 0, "agent:no-mr": 1}.get(LABEL[ctx.outcome or Reason.ERROR], 2)
+
+
+def _antigaming_reason(report: dict) -> tuple:
+    """CI không có vòng tự sửa: luật agent-sửa-được vẫn là NO_MR (exit 1), chỉ luật
+    không ai được tự sửa mới là chuyện của người (exit 2). Trả về (reason, why, kind)."""
+    why = f"vi phạm: {', '.join(report['failed_rules'])}"
+    if report.get("blocking_rules"):
+        return Reason.NEEDS_HUMAN, why, Kind.ANTIGAMING_EVIDENCE
+    return Reason.NO_MR, why, Kind.ANTIGAMING
 
 
 def _load_baseline(args):

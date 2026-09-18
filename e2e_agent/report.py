@@ -7,9 +7,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .core.reasons import EXPLAIN, Reason
+from .core.reasons import EXPLAIN, EXPLAIN_KIND, Kind, Reason
 
-_ICON = {"pass": "✅", "fail": "❌", "out_of_scope": "⊘", "PASS": "✅", "FAIL": "❌"}
+_ICON = {"pass": "✅", "fail": "❌", "needs_review": "⚠️", "out_of_scope": "⊘",
+         "PASS": "✅", "FAIL": "❌"}
 
 
 def read_events(run_dir: Path) -> list[dict]:
@@ -30,7 +31,8 @@ def render(run_dir: Path) -> str:
     d = (decision or {}).get("data", {})
 
     out = [f"# Run {first.get('run_id', '?')} — ticket {first.get('task_id', '?')}", ""]
-    out += [f"**Kết cục:** `{d.get('reason', '?')}` → label `{d.get('label', '?')}`", ""]
+    kind = f" / `{d['kind']}`" if d.get("kind") else ""
+    out += [f"**Kết cục:** `{d.get('reason', '?')}`{kind} → label `{d.get('label', '?')}`", ""]
     if d.get("meaning"):
         out += [f"> {d['meaning']}", ""]
     if d.get("why"):
@@ -90,6 +92,8 @@ def render(run_dir: Path) -> str:
 
 
 def explain_all() -> str:
-    rows = ["| Mã | Nghĩa |", "|---|---|"]
+    rows = ["| Kết cục | Nghĩa |", "|---|---|"]
     rows += [f"| `{r.value}` | {EXPLAIN[r]} |" for r in Reason]
+    rows += ["", "| Kind (chi tiết) | Nghĩa |", "|---|---|"]
+    rows += [f"| `{k.value}` | {EXPLAIN_KIND[k]} |" for k in Kind]
     return "\n".join(rows)

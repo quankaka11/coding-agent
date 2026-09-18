@@ -9,7 +9,7 @@ from pathlib import Path
 from ..agent import spec as spec_mod
 from ..agent.headless import AgentResult
 from ..config.profile import Profile
-from ..core.reasons import Reason
+from ..core.reasons import Kind, Reason
 from ..core.run import RunContext
 from ..tracker.base import Ticket
 
@@ -29,18 +29,30 @@ def run(ctx: RunContext, prof: Profile, repo: Path, ticket: Ticket, agent,
         ctx.emit("planning.rejections", count=len(rejections))
 
     with ctx.stage("intake"):
-        prompt = _skill("intake") + _ticket_block(ticket) + rejected_block
+        prompt = (_skill("intake") + _mode_block(prof.conventions.get("intake_mode", "assume"))
+                  + _ticket_block(ticket) + rejected_block)
         result = _ask(ctx, agent, repo, "intake", prompt)
         spec = _parse_spec(ctx, agent, repo, result, ticket, prompt)
-        ctx.emit("intake.spec", task_type=spec.task_type, ac=len(spec.acceptance_criteria),
-                 not_ready=spec.not_ready())
-        if spec.task_type == "T4":
-            ctx.decide(Reason.NOMR_T4, "task không kiểm chứng được bằng test tất định",
-                       objective=spec.objective)
-        if missing := spec.not_ready():
-            ctx.decide(Reason.NOMR_NOT_READY, f"Definition of Ready chưa đạt: {', '.join(missing)}",
-                       missing=missing)
+        # Lưu TRƯỚC khi phán: spec là thứ người xem khi hỏi "agent vướng ở đâu",
+        # kể cả (nhất là) khi run dừng ở not_ready.
         spec.save(ctx.run_dir / "spec.yaml")
+        ctx.emit("intake.spec", task_type=spec.task_type, ac=len(spec.acceptance_criteria),
+                 not_ready=spec.not_ready(), questions=spec.questions[:5],
+                 assumptions=len(spec.assumptions), out_of_scope=len(spec.out_of_scope))
+        if spec.task_type == "T4":
+            ctx.decide(Reason.NO_MR,
+                       "task loại T4: không kiểm chứng được bằng test tất định (phụ thuộc "
+                       "output LLM, đổi prompt, hành vi không quan sát được bằng assert)",
+                       kind=Kind.T4, objective=spec.objective)
+        if missing := spec.not_ready():
+            if spec.unexplained():
+                spec = _ask_for_notes(ctx, agent, repo, spec, prompt)
+                spec.save(ctx.run_dir / "spec.yaml")
+            ctx.decide(Reason.NO_MR,
+                       f"Definition of Ready chưa đạt ({', '.join(missing)}):\n\n"
+                       f"{spec.not_ready_report()}",
+                       kind=Kind.NOT_READY, missing=missing,
+                       notes=spec.readiness_notes, questions=spec.questions)
 
     with ctx.stage("discovery"):
         result = _ask(ctx, agent, repo, "discovery",
@@ -93,6 +105,30 @@ def _parse_spec(ctx: RunContext, agent, repo: Path, result: AgentResult, ticket:
     return spec
 
 
+def _ask_for_notes(ctx: RunContext, agent, repo: Path, spec, prompt: str):
+    """Agent đánh `fail` mà không nói vì sao → xin bổ sung MỘT lần, không coi là lỗi.
+
+    Người viết ticket cần lý do để sửa ticket; nhưng agent quên ghi lý do không phải
+    lỗi hệ thống, và cũng không phải chuyện phải giao người. Vẫn thiếu thì NO_MR kèm
+    ghi chú "agent không ghi lý do" và spec.yaml để xem.
+    """
+    missing = spec.unexplained()
+    ctx.emit("intake.ask_notes", level="warn", unexplained=missing)
+    retry = _ask(ctx, agent, repo, "intake-notes",
+                 prompt + "\n\n## Bổ sung lý do\n\nBạn đánh `fail` cho "
+                          f"{missing} nhưng chưa ghi vì sao. In lại TOÀN BỘ khối ```yaml y như "
+                          "trước, thêm `readiness_notes` (một dòng cho mỗi mục fail, chỉ đúng chỗ "
+                          "mơ hồ trong ticket) và `questions` (câu người viết ticket phải trả "
+                          "lời). Không đổi các mục đã pass.\n")
+    try:
+        new = spec_mod.parse(retry.text)
+    except spec_mod.SpecError as exc:
+        ctx.emit("intake.ask_notes_failed", level="warn", error=str(exc)[:200])
+        return spec
+    new.task_id, new.source_ticket = spec.task_id, spec.source_ticket
+    return new
+
+
 def _skill(name: str) -> str:
     return (SKILLS / f"{name}.md").read_text(encoding="utf-8") + "\n\n---\n\n"
 
@@ -107,6 +143,17 @@ def _rejected_block(rejections: list[str] | None) -> str:
             "điều đó trong plan thay vì đoán.\n")
 
 
+def _mode_block(mode: str) -> str:
+    if mode == "ask":
+        return ("## Chế độ: ask\n\nRepo này muốn được HỎI khi ticket mơ hồ: chỗ nào không rõ thì "
+                "đánh `fail` ở readiness kèm `readiness_notes` và `questions`, không tự giả định. "
+                "`assumptions` để [].\n\n")
+    return ("## Chế độ: assume\n\nÁp \"Nguyên tắc tự chủ\" ở trên: không hỏi lại; chọn cách hiểu "
+            "hẹp nhất đúng chữ trên ticket, ghi vào `assumptions`; việc liên quan nhưng ticket "
+            "không yêu cầu ghi vào `out_of_scope`. Chỉ `fail` khi không cách hiểu nào ra được "
+            "test tất định.\n\n")
+
+
 def _ticket_block(ticket: Ticket) -> str:
     return f"## Ticket {ticket.id}\n\n**{ticket.title}**\n\n{ticket.body}\n"
 
@@ -117,4 +164,10 @@ def _spec_block(spec) -> str:
     lines += [f"- {ac['id']}: {ac['text']}" for ac in spec.acceptance_criteria]
     if spec.repro_steps:
         lines.append("- Tái hiện: " + " → ".join(spec.repro_steps))
+    if spec.assumptions:
+        lines.append("\n### Giả định đã chốt (người duyệt plan đã thấy)")
+        lines += [f"- {a}" for a in spec.assumptions]
+    if spec.out_of_scope:
+        lines.append("\n### NGOÀI PHẠM VI — không làm, không đụng")
+        lines += [f"- {o}" for o in spec.out_of_scope]
     return "\n".join(lines) + "\n"

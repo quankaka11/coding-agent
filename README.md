@@ -19,7 +19,7 @@ e2e_agent/
   agent/     gọi Claude Code headless, schema spec
   pipeline/  sandbox, Phase A, Phase B, orchestrator, watcher
   notify/    thông báo ra ngoài: Google Chat / Slack / webhook
-  skills/    5 skill cho agent (đi kèm trong gói)
+  skills/    6 skill cho agent (đi kèm trong gói): intake, discovery, planning, test_gen, implement, lint_fix
   hooks/     PreToolUse hook chặn forbidden_paths
 ```
 
@@ -40,6 +40,8 @@ backlog_space=xxx.backlog.com
 backlog_project=PROJKEY
 backlog_api_key=...
 google_chat_webhook=...          # tuỳ chọn
+agent_model=opus                 # tuỳ chọn: model cho claude headless (alias hoặc tên đầy đủ)
+agent_effort=high                # tuỳ chọn: low|medium|high|xhigh|max
 ```
 
 ```bash
@@ -84,6 +86,60 @@ e2ea reasons
 ```
 
 **Exit code là hợp đồng với CI:** `0` đủ điều kiện mở MR · `1` NO_MR · `2` cần người.
+
+## Agent tự sửa — người chỉ review khi thật cần
+
+Quy tắc lấy từ hai skill trong [references/](references/) (`e2e-agent`, `e2e-agent-setup`),
+áp vào pipeline này. Mục tiêu: agent xử lý được task tới MR; người chỉ ra tay khi
+bằng chứng không còn tin được hoặc cần một quyết định máy không có quyền đoán.
+
+| Tình huống | Trước | Bây giờ |
+|---|---|---|
+| Lint đỏ sẵn trên code chưa sửa | NO_MR | agent sửa bằng commit `chore:` riêng, rồi mới viết test (`limits.baseline_lint_fix`) |
+| Test vừa viết không chạy được, pass sẵn trên code cũ, T2 mà đỏ, hoặc có assert rỗng / thiếu marker AC / skip / ra ngoài vùng | NO_MR hoặc người | agent viết lại theo feedback (`limits.testgen_fix_rounds`) rồi mới đóng băng |
+| Test mới fail sau khi sửa code | luôn coi là lỗi agent | chạy lại `flaky_rerun` lần: fail đủ mọi lần = AGENT_INTRODUCED → agent sửa; không nhất quán = FLAKY → người |
+| Anti-gaming fail: G-3, G-10 (ngoài vùng/phạm vi), G-7 (dòng mới thiếu test), G-4 mutation yếu, G-1/G-2 | cần người | agent nhận feedback, sửa, gate + anti-gaming lại (`limits.antigaming_fix_rounds`); hết vòng → `NO_MR/antigaming` |
+| Anti-gaming G-9 (sửa test đã đóng băng) | cần người | hệ thống khôi phục test về mốc đóng băng (không cần LLM), agent sửa code lại |
+| G-6 (heuristic assert/mock), G-8 (thiếu marker AC) | fail | `needs_review`: không chặn MR, bắt buộc nằm trong mô tả MR cho reviewer |
+| G-4 thiếu bằng chứng fail-trước, G-5 gate lệch commit | cần người | vẫn `NEEDS_HUMAN/antigaming_evidence` — bằng chứng hỏng thì không ai được tự sửa |
+| Coverage | không giảm **VÀ** ≥ ngưỡng dòng mới | không giảm **HOẶC** ≥ ngưỡng dòng mới (xoá code đã có test làm % tổng tụt là bình thường) |
+
+**Intake không hỏi lại** (`conventions.intake_mode: assume`, mặc định): ticket mơ hồ thì
+agent chọn cách hiểu **hẹp nhất, đúng chữ trên ticket**, ghi vào `assumptions`; việc liên
+quan nhưng ticket không yêu cầu ghi vào `out_of_scope` và **không làm**. Cả hai in nổi trong
+comment plan để người duyệt gật hoặc bác — plan vẫn là điểm duyệt duy nhất. `fail` readiness
+chỉ khi không cách hiểu nào ra được test tất định. Repo muốn được hỏi thì đặt `intake_mode: ask`.
+
+Agent viết test chỉ nhận acceptance criteria và mục **"Test sẽ viết"** của plan — không
+nhận "Cách giải"/"File sẽ đụng" — để test không chép lại giả định của cách sửa. Plan
+phải có đúng heading `## Test sẽ viết` và `## Rủi ro`; hai mục đó đi thẳng vào mô tả MR.
+
+Mỗi luật anti-gaming khai `remedy` của nó (`implement` / `test_gen` / `restore_tests` /
+không có = người) ngay trong `enforce/antigaming.py`; Phase B chỉ đọc kế hoạch đó, không
+tự phân loại lại. Số vòng tự sửa ghi trong `evidence.json` → `self_fix` và trong mô tả MR.
+
+### Kết cục: đúng 4 loại (`e2ea reasons`)
+
+Theo skill e2e-agent, một run chỉ kết thúc bằng: ra MR, NO_MR, cần người, hoặc lỗi
+hệ thống. Chi tiết "vì sao" nằm ở trường `kind` (log, `outcome.json`, comment ticket
+dạng `NO_MR/plan_stale`), không phải một trạng thái riêng.
+
+| Reason | Label | Người phải làm gì | `kind` |
+|---|---|---|---|
+| `OK` | `agent:mr-created` | review MR | — |
+| `NO_MR` | `agent:no-mr` | không gì ngay; agent đã thử và nói rõ vì sao. Với `not_ready`, comment ticket liệt kê từng mục chưa đạt kèm lý do và **câu hỏi cần trả lời** (`readiness_notes`, `questions` trong spec) — trả lời ngay trong ticket rồi đặt lại `agent:try` | `not_ready`, `t4`, `plan_rejected`, `plan_stale`, `baseline_red`, `testgen_broken`, `test_passes_pre`, `t2_red`, `gate_fail`, `loop_limit`, `antigaming` |
+| `NEEDS_HUMAN` | `agent:needs-human` | **phải quyết**: bằng chứng không còn tin được hoặc cấu hình/thao tác của người sai | `flaky`, `antigaming_evidence`, `misrouted`, `profile_gap`, `budget`, `stale_run` |
+| `ERROR` | `agent:needs-human` | xem log | `system` |
+
+Những chỗ trước đây dừng chờ người nay quay vòng cho agent trong cùng run (số lượt
+trong `limits`):
+
+- test viết ra không chạy được / pass sẵn trên code cũ / T2 mà đỏ → agent viết lại
+  (`testgen_fix_rounds`), hết lượt mới `NO_MR`;
+- gate và anti-gaming fail sửa được → agent sửa (`gate_fix_rounds`, `antigaming_fix_rounds`);
+- lint đỏ sẵn → agent sửa bằng commit riêng;
+- plan lạc hậu (code trong phạm vi đổi sau khi duyệt) → ticket chi tiết đóng `NO_MR/plan_stale`,
+  ticket gốc **tự quay về `agent:try`**, agent lập plan mới trên code mới, người chỉ duyệt lại.
 
 ## Hai hợp đồng mà agent không được phá
 
@@ -167,7 +223,7 @@ lý do — không có lối thoát im lặng, và có test canh điều đó. `e
 ## Test
 
 ```bash
-python3 scripts/e2e_offline.py   # trọn vòng ticket → MR, không LLM, không mạng (~30 giây)
+python3 scripts/e2e_offline.py   # trọn vòng ticket → MR, không LLM, không mạng (~40 giây); 8 kịch bản: tự sửa G-10, lint đỏ sẵn, test pass sẵn, plan lạc hậu → plan lại
 python3 -m pytest tests/ -q      # 130 test, ~3 phút (tests/ hiện chưa nằm trong git)
 ```
 

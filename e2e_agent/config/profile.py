@@ -24,6 +24,16 @@ DEFAULT_LIMITS = {
     "gate_fix_rounds": 2, "same_error_limit": 3,
     "flaky_rerun": 3, "run_timeout_min": 60, "run_cost_cap_usd": 15,
     "cmd_timeout_sec": 900, "coverage_new_line_pct": 80,
+    #: Anti-gaming fail mà agent sửa được (G-3/G-7/G-9/G-10…) thì cho agent sửa lại
+    #: tối đa bấy nhiêu vòng rồi mới NO_MR. 0 = tắt, fail là NO_MR ngay.
+    "antigaming_fix_rounds": 2,
+    #: Test vừa viết không dùng được (không chạy, pass sẵn trên code cũ, T2 mà đỏ) hoặc
+    #: không qua tiền kiểm (assert rỗng, thiếu marker AC, skip…) thì cho agent viết lại
+    #: N lần rồi mới NO_MR / đóng băng.
+    "testgen_fix_rounds": 2,
+    #: Lint đỏ sẵn trên code chưa sửa: true = agent sửa bằng commit riêng rồi đi
+    #: tiếp; false = NO_MR như test đỏ.
+    "baseline_lint_fix": True,
     #: Ticket ở `agent:running` quá số phút này mà không chốt kết cục thì coi là
     #: tiến trình đã chết và giao cho người. None = gấp đôi run_timeout_min.
     "running_stale_min": None,
@@ -38,8 +48,20 @@ DEFAULT_TRACKER = {"kind": "file", "root": "backlog", "url": "", "project": "",
 DEFAULT_FORGE = {"kind": "file", "root": "backlog", "url": "", "project": "",
                  "token_env": "GITLAB_TOKEN"}
 DEFAULT_NOTIFY = {"kind": "none", "url_env": "NOTIFY_WEBHOOK_URL", "events": None}
-DEFAULT_AGENT = {"binary": "claude", "model": None, "permission_mode": "acceptEdits",
+#: `model`/`effort` để None thì lấy từ .env (`agent_model`, `agent_effort`), không có
+#: thì để `claude` tự chọn. .env ghi đè hồ sơ: đổi model cho cả máy không phải sửa
+#: từng hồ sơ repo.
+#: `permission_mode` là chế độ quyền của `claude -p`. Headless không có ai trả lời prompt,
+#: nên tool ngoài `allowed_tools` bị từ chối ở mọi mode; `auto` để claude tự quyết trong
+#: phạm vi đó. Hook chặn forbidden_paths (PreToolUse) vẫn chạy ở mọi mode.
+DEFAULT_AGENT = {"binary": "claude", "model": None, "effort": None,
+                 "permission_mode": "auto",
                  "allowed_tools": "Read,Write,Edit,Glob,Grep,Bash", "timeout_sec": 1800}
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+PERMISSION_MODES = ("auto", "acceptEdits", "dontAsk", "bypassPermissions", "manual", "plan")
+#: conventions.intake_mode: `assume` (mặc định) — Intake tự chọn cách hiểu hẹp nhất, ghi
+#: giả định, không hỏi lại; `ask` — mơ hồ là fail readiness và hỏi người viết ticket.
+INTAKE_MODES = ("assume", "ask")
 
 
 class ProfileError(ValueError):
@@ -138,6 +160,12 @@ def _validate(p: Profile) -> None:
         errs.append(f"agent có khoá lạ {sorted(unknown)}")
     if unknown := set(p.notify) - set(DEFAULT_NOTIFY):
         errs.append(f"notify có khoá lạ {sorted(unknown)}")
+    if p.conventions.get("intake_mode", "assume") not in INTAKE_MODES:
+        errs.append(f"conventions.intake_mode phải thuộc {INTAKE_MODES}")
+    if p.agent_cfg("permission_mode") not in PERMISSION_MODES:
+        errs.append(f"agent.permission_mode phải thuộc {PERMISSION_MODES}")
+    if (eff := p.agent_cfg("effort")) and eff not in EFFORT_LEVELS:
+        errs.append(f"agent.effort phải thuộc {EFFORT_LEVELS}")
     if p.notify_cfg("kind") not in ("none", "webhook"):
         errs.append("notify.kind phải là none hoặc webhook")
     if p.tracker_cfg("kind") not in ("file", "gitlab", "backlog"):

@@ -337,7 +337,7 @@ def generate(repo: Path, repo_id: str, tracker: dict | None = None, forge: dict 
         "tracker": tracker or {"kind": "file", "root": "backlog"},
         "forge": forge or {"kind": "file", "root": "backlog"},
         "notify": notify or {"kind": "none"},
-        "agent": {"binary": "claude", "permission_mode": "acceptEdits",
+        "agent": {"binary": "claude", "permission_mode": "auto",
                   "allowed_tools": "Read,Write,Edit,Glob,Grep,Bash", "timeout_sec": 1800},
     }
     if (tracker or {}).get("kind", "file") == "file":

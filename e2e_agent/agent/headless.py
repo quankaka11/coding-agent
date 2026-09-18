@@ -31,9 +31,10 @@ class ClaudeCode:
     """Runner thật. Test dùng StubAgent cùng giao diện .run()."""
 
     def __init__(self, binary: str = "claude", model: str | None = None,
-                 permission_mode: str = "acceptEdits",
-                 allowed_tools: str = DEFAULT_TOOLS, timeout_sec: int = 1800) -> None:
-        self.binary, self.model = binary, model
+                 permission_mode: str = "auto",
+                 allowed_tools: str = DEFAULT_TOOLS, timeout_sec: int = 1800,
+                 effort: str | None = None) -> None:
+        self.binary, self.model, self.effort = binary, model, effort
         self.permission_mode, self.allowed_tools = permission_mode, allowed_tools
         self.timeout_sec = timeout_sec
 
@@ -49,8 +50,11 @@ class ClaudeCode:
                 "--permission-mode", self.permission_mode, "--allowed-tools", self.allowed_tools]
         if self.model:
             argv += ["--model", self.model]
+        if self.effort:
+            argv += ["--effort", self.effort]
 
-        ctx.emit("agent.start", agent=name, cwd=str(cwd), tools=self.allowed_tools)
+        ctx.emit("agent.start", agent=name, cwd=str(cwd), tools=self.allowed_tools,
+                 permission_mode=self.permission_mode, model=self.model, effort=self.effort)
         res = ctx.cmd(argv, cwd=cwd, timeout=self.timeout_sec)
         (ctx.run_dir / f"agent-{name}.jsonl").write_text(res.stdout, encoding="utf-8")
         out = _parse_stream(ctx, res.stdout, name)
@@ -110,7 +114,12 @@ class StubAgent:
         self.calls.append(name)
         self.prompts[name] = prompt
         ctx.emit("agent.start", agent=name, cwd=str(cwd), stub=True)
-        handler = self.script.get(name) or self.script.get(name.rsplit("-", 1)[0])
+        # "implement-ag1-2" → "implement-ag1" → "implement": kịch bản theo tên gốc,
+        # hậu tố lượt/vòng khắc phục không cần khai riêng.
+        handler, key = None, name
+        while handler is None and key:
+            handler = self.script.get(key)
+            key = key.rsplit("-", 1)[0] if "-" in key else ""
         if handler is None:
             return AgentResult(False, error=f"stub không có kịch bản cho {name!r}")
         text = handler(cwd) or ""

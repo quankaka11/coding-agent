@@ -119,13 +119,34 @@ def hook_importable(package_root: Path | None = None) -> bool:
 
 #: Artefact của tool test/coverage không bao giờ được vào commit của agent. Nếu
 #: repo đích không gitignore chúng, `git add -A` gom hết và G-3 báo "ngoài
-#: allowed_paths" — một run đúng bị kết HUMAN_ANTIGAMING oan.
+#: allowed_paths" — một run đúng bị kết NO_MR/antigaming oan.
 ARTEFACT_EXCLUDES = [
     ":(exclude)coverage.json", ":(exclude).coverage", ":(exclude,glob).coverage.*",
     ":(exclude,glob)**/__pycache__/**", ":(exclude,glob)**/.pytest_cache/**",
     ":(exclude,glob)**/htmlcov/**", ":(exclude,glob)**/.claude/**",
     ":(exclude,glob)**/node_modules/**",
 ]
+
+
+def restore_files(work: Path, sha: str, files: list[str]) -> list[str]:
+    """Đưa các file về đúng nội dung tại `sha`; file chưa tồn tại ở đó thì xoá.
+
+    Khắc phục G-9 không cần LLM: test đã đóng băng thì bản đóng băng là sự thật.
+    Trả về danh sách file đã đụng (để ghi log/commit).
+    """
+    touched: list[str] = []
+    for rel in files:
+        exists = subprocess.run(["git", "cat-file", "-e", f"{sha}:{rel}"], cwd=work,
+                                capture_output=True).returncode == 0
+        if exists:
+            subprocess.run(["git", "checkout", sha, "--", rel], cwd=work,
+                           capture_output=True, text=True, check=False)
+        else:
+            subprocess.run(["git", "rm", "-q", "-f", "--ignore-unmatch", "--", rel], cwd=work,
+                           capture_output=True, text=True, check=False)
+            (work / rel).unlink(missing_ok=True)
+        touched.append(rel)
+    return touched
 
 
 def commit_all(work: Path, message: str) -> str:

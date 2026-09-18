@@ -60,6 +60,7 @@ class Rollup:
     runs: int = 0
     by_phase: dict = field(default_factory=dict)
     by_reason: dict = field(default_factory=dict)
+    by_kind: dict = field(default_factory=dict)
     mr_rate: float = 0.0
     reviewed: int = 0
     by_review: dict = field(default_factory=dict)
@@ -82,6 +83,9 @@ def collect(runs_root: Path) -> Rollup:
         reason = outcome.get("reason", "?")
         roll.runs += 1
         roll.by_reason[reason] = roll.by_reason.get(reason, 0) + 1
+        if kind := outcome.get("kind"):
+            key = f"{reason}/{kind}"
+            roll.by_kind[key] = roll.by_kind.get(key, 0) + 1
         durations.append((outcome.get("duration_ms") or 0) / 1000)
 
         phase = _phase(run_dir)
@@ -92,8 +96,10 @@ def collect(runs_root: Path) -> Rollup:
 
         for event in _events(run_dir):
             data = event.get("data") or {}
-            if event["event"] == "antigaming.rule" and data.get("status") == "fail":
+            if event["event"] == "antigaming.rule" and data.get("status") in ("fail", "needs_review"):
                 rule = data.get("rule", "?")
+                if data.get("status") == "needs_review":
+                    rule += " (review)"
                 roll.antigaming_triggers[rule] = roll.antigaming_triggers.get(rule, 0) + 1
             elif event["event"] == "run.end":
                 roll.total_cost_usd += float(data.get("cost_usd") or 0)
@@ -123,6 +129,10 @@ def render(roll: Rollup) -> str:
     lines += ["## Kết cục theo mã lý do", "", "| Mã | Số run |", "|---|---|"]
     lines += [f"| `{k}` | {v} |" for k, v in sorted(roll.by_reason.items(), key=lambda x: -x[1])]
     lines.append("")
+    if roll.by_kind:
+        lines += ["## Chi tiết theo kind", "", "| Reason/kind | Số run |", "|---|---|"]
+        lines += [f"| `{k}` | {v} |" for k, v in sorted(roll.by_kind.items(), key=lambda x: -x[1])]
+        lines.append("")
     lines += ["## Anti-gaming bị trigger", ""]
     if roll.antigaming_triggers:
         lines += ["| Luật | Số lần |", "|---|---|"]

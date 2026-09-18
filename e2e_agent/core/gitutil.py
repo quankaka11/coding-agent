@@ -94,6 +94,20 @@ def added_lines_text(repo: Path, base: str, head: str = "HEAD") -> list[tuple[st
     return rows
 
 
+def diff_stat(repo: Path, base: str, head: str = "HEAD") -> dict:
+    """{files, insertions, deletions} của base..head — cho mô tả MR."""
+    out = _git(repo, "diff", "--numstat", f"{base}..{head}")
+    files = ins = dels = 0
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        files += 1
+        ins += int(parts[0]) if parts[0].isdigit() else 0
+        dels += int(parts[1]) if parts[1].isdigit() else 0
+    return {"files": files, "insertions": ins, "deletions": dels}
+
+
 def file_at(repo: Path, ref: str, path: str) -> str | None:
     try:
         return _git(repo, "show", f"{ref}:{path}")

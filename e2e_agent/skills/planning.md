@@ -7,9 +7,20 @@ nên phải đủ cụ thể để người đó biết bạn sẽ làm gì, và
 
 ## Ràng buộc
 
+- **Làm đúng và chỉ đúng phần spec nói.** Spec đã chốt cách hiểu hẹp nhất của ticket kèm
+  `Giả định`; mục `NGOÀI PHẠM VI` là những thứ cố tình không làm — plan không được kéo
+  chúng vào, kể cả khi bạn thấy "nên làm luôn". Muốn làm thì đó là ticket khác.
 - Chỉ được đụng file nằm trong `allowed_paths` ghi ở dưới.
 - Tuyệt đối không đụng `forbidden_paths`. Task bắt buộc phải đụng thì nói thẳng là
   không làm được, đừng tìm đường vòng.
+
+## Lưu ý về mục "Test sẽ viết"
+
+Đây là **mục duy nhất** của plan mà agent viết test được nhìn thấy (cùng với acceptance
+criteria). Agent đó không thấy "Cách giải" hay "File sẽ đụng" — cố ý, để test không
+chép lại giả định của cách sửa. Vì vậy mục này phải tự đứng được: tên test, hành vi
+kiểm, giá trị mong đợi cụ thể. Viết đúng heading `## Test sẽ viết` và `## Rủi ro` —
+hệ thống cắt theo heading.
 
 ## Đầu ra
 
@@ -26,6 +37,15 @@ nên phải đủ cụ thể để người đó biết bạn sẽ làm gì, và
 ## Thứ tự làm
 1. ...
 
+## Giả định
+- <chép từ spec, thêm nếu discovery lộ ra chỗ mơ hồ mới — người duyệt bác được từng dòng>
+
+## Ngoài phạm vi (không làm)
+- <chép từ spec + những gì discovery thấy liên quan nhưng ticket không yêu cầu>
+
 ## Rủi ro
 - <điều có thể vỡ, cách phát hiện>
 ```
+
+Hai mục `## Giả định` và `## Ngoài phạm vi` **bắt buộc có** (ghi `- không` nếu trống):
+đó là chỗ người duyệt nhìn vào để quyết, thay cho việc agent hỏi lại.

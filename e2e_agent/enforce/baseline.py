@@ -8,7 +8,7 @@ from pathlib import Path
 
 from ..core import gitutil, parsers
 from ..config.profile import COVERAGE_FILE, Profile
-from ..core.reasons import Reason
+from ..core.reasons import Kind, Reason
 from ..core.run import RunContext
 
 
@@ -45,12 +45,15 @@ def _run_check(ctx: RunContext, prof: Profile, repo: Path, name: str, **fmt: str
 
 
 def capture(ctx: RunContext, prof: Profile, repo: Path, scope: list[str] | None = None,
-            strict: bool = True) -> Baseline:
+            strict: bool = True, defer_lint: bool = False) -> Baseline:
     """Chụp baseline.
 
     strict=True (Phase B): baseline không dùng được thì decide() và thoát.
     strict=False (CI đối chứng): chỉ ghi nhận, vì ở đó baseline là dữ liệu để
     đối chiếu chứ không phải điều kiện để đi tiếp.
+    defer_lint=True: lint đỏ KHÔNG chốt NO_MR ở đây mà chỉ ghi `lint: fail` để
+    Phase B cho agent sửa bằng commit riêng (skill e2e-agent, bước 5: lint sửa
+    được tất định, không làm mờ bằng chứng như test đỏ).
     """
     scope = scope or []
     base = Baseline(base_sha=gitutil.head_sha(repo), runs=int(prof.limit("flaky_rerun")))
@@ -58,11 +61,14 @@ def capture(ctx: RunContext, prof: Profile, repo: Path, scope: list[str] | None 
     base.build, _ = _run_check(ctx, prof, repo, "build")
     if base.build == "fail":
         if strict:
-            ctx.decide(Reason.NOMR_BASELINE_RED, "build fail trên code chưa sửa", check="build")
-    base.lint, _ = _run_check(ctx, prof, repo, "lint")
+            ctx.decide(Reason.NO_MR, "build fail trên code chưa sửa", kind=Kind.BASELINE_RED, check="build")
+    base.lint, lint_res = _run_check(ctx, prof, repo, "lint")
     if base.lint == "fail":
-        if strict:
-            ctx.decide(Reason.NOMR_BASELINE_RED, "lint fail trên code chưa sửa", check="lint")
+        if strict and not defer_lint:
+            ctx.decide(Reason.NO_MR, "lint fail trên code chưa sửa", kind=Kind.BASELINE_RED, check="lint")
+        ctx.emit("baseline.lint_red", level="warn",
+                 note="lint đỏ sẵn — Phase B sẽ cho agent sửa bằng commit riêng trước khi viết test",
+                 output=_tail(getattr(lint_res, "stdout", "") + getattr(lint_res, "stderr", "")))
 
     seen: list[set[str]] = []
     report = parsers.TestReport()
@@ -93,9 +99,9 @@ def capture(ctx: RunContext, prof: Profile, repo: Path, scope: list[str] | None 
 
     if not base.stable and strict:
         unstable = sorted(set.union(*seen) - set.intersection(*seen))
-        ctx.decide(Reason.HUMAN_FLAKY,
+        ctx.decide(Reason.NEEDS_HUMAN,
                    "test fail không tái lập ổn định — không phân biệt được lỗi sẵn có với lỗi agent",
-                   unstable_tests=unstable[:10])
+                   kind=Kind.FLAKY, unstable_tests=unstable[:10])
 
     if base.failed_tests:
         if scope and not any(report.files.get(t) for t in base.failed_tests):
@@ -105,9 +111,9 @@ def capture(ctx: RunContext, prof: Profile, repo: Path, scope: list[str] | None 
         in_scope = [t for t in base.failed_tests
                     if _in_scope(report.files.get(t, ""), scope)]
         if in_scope and strict:
-            ctx.decide(Reason.NOMR_BASELINE_RED,
+            ctx.decide(Reason.NO_MR,
                        "có lỗi sẵn có nằm trong chính phạm vi sắp sửa",
-                       failed_in_scope=in_scope[:10], scope=scope)
+                       kind=Kind.BASELINE_RED, failed_in_scope=in_scope[:10], scope=scope)
         ctx.emit("baseline.pre_existing", level="warn", count=len(base.failed_tests),
                  tests=base.failed_tests[:10], note="ngoài scope nên vẫn chạy tiếp")
 
@@ -116,6 +122,18 @@ def capture(ctx: RunContext, prof: Profile, repo: Path, scope: list[str] | None 
     ctx.emit("baseline.ready", total=base.total, failed=len(base.failed_tests),
              skipped=base.skipped, stable=base.stable, base_sha=base.base_sha[:8])
     return base
+
+
+def lint_output(ctx: RunContext, prof: Profile, repo: Path) -> tuple[str, str]:
+    """Chạy lại lint, trả về (status, output) — cho bước agent sửa lint có sẵn."""
+    status, res = _run_check(ctx, prof, repo, "lint")
+    out = (getattr(res, "stdout", "") or "") + (getattr(res, "stderr", "") or "")
+    return status, _tail(out, 120)
+
+
+def _tail(text: str, lines: int = 40) -> str:
+    rows = (text or "").strip().splitlines()
+    return "\n".join(rows[-lines:])
 
 
 def coverage_path(ctx: RunContext) -> Path:

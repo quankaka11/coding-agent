@@ -41,9 +41,14 @@ limits:
   run_cost_cap_usd: 15
   cmd_timeout_sec: 900
   coverage_new_line_pct: 80
+  # Agent tự sửa (mục tiêu: người chỉ review khi thật cần) — xem README mục "Agent tự sửa".
+  antigaming_fix_rounds: 2     # anti-gaming fail sửa được (G-3/G-7/G-9/G-10…) → agent sửa lại tối đa N vòng
+  testgen_fix_rounds: 2        # test viết ra hỏng / pass sẵn / T2 mà đỏ / không qua tiền kiểm → agent viết lại N lần rồi mới NO_MR
+  baseline_lint_fix: true      # lint đỏ sẵn → agent sửa bằng commit riêng; false = NO_MR như test đỏ
 
 conventions:
   ac_marker: "pytest.mark.ac"
+  intake_mode: assume    # assume: mơ hồ → tự chọn cách hiểu hẹp nhất, ghi giả định vào plan; ask: hỏi lại người viết ticket
 
 mutation: {enabled: true, max_mutants: 20, timeout_sec: 300,
            per_mutant_timeout_sec: 120, min_kill_pct: 70}
@@ -67,6 +72,9 @@ notify:
 
 agent:
   binary: claude
-  permission_mode: acceptEdits
+  # model/effort bỏ trống = lấy từ .env (agent_model, agent_effort); .env luôn ghi đè.
+  # model: opus
+  # effort: high
+  permission_mode: auto        # auto | acceptEdits | dontAsk | bypassPermissions; hook chặn forbidden_paths chạy ở mọi mode
   allowed_tools: "Read,Write,Edit,Glob,Grep,Bash"
   timeout_sec: 1800

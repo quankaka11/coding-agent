@@ -96,6 +96,6 @@ notify:
   url_env: google_chat_webhook
 agent:
   binary: claude
-  permission_mode: acceptEdits
+  permission_mode: auto        # auto | acceptEdits | dontAsk | bypassPermissions; hook chặn forbidden_paths chạy ở mọi mode
   allowed_tools: Read,Write,Edit,Glob,Grep,Bash
   timeout_sec: 1800

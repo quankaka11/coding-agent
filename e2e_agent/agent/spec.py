@@ -25,6 +25,14 @@ class Spec:
     repro_steps: list[str] = field(default_factory=list)
     scope: dict = field(default_factory=dict)
     readiness: dict = field(default_factory=dict)
+    #: Vì sao từng mục readiness fail — đi thẳng lên ticket cho người viết.
+    readiness_notes: dict = field(default_factory=dict)
+    #: Điều người viết ticket phải trả lời để agent làm tiếp.
+    questions: list[str] = field(default_factory=list)
+    #: Cách hiểu agent đã chọn ở mỗi chỗ ticket mơ hồ — người duyệt plan bác được.
+    assumptions: list[str] = field(default_factory=list)
+    #: Thấy liên quan nhưng ticket không yêu cầu → KHÔNG làm. Implement bị cấm đụng.
+    out_of_scope: list[str] = field(default_factory=list)
     source_ticket: str = ""
 
     @property
@@ -38,6 +46,26 @@ class Spec:
     def not_ready(self) -> list[str]:
         keys = READY_KEYS + (T3_READY_KEYS if self.task_type == "T3" else ())
         return [k for k in keys if self.readiness.get(k) != "pass"]
+
+    def unexplained(self) -> list[str]:
+        """Mục readiness fail mà agent chưa ghi lý do — phase_a sẽ xin bổ sung một lần."""
+        return [k for k in self.not_ready() if not (self.readiness_notes or {}).get(k)]
+
+    def not_ready_report(self) -> str:
+        """Markdown cho người viết ticket: mục nào fail, vì sao, và cần trả lời gì.
+
+        Chỉ in tên mục (`clear`) thì người đọc phải mở log agent mới biết agent vướng
+        ở đâu — đã xảy ra thật. Thiếu ghi chú cho một mục fail thì nói thẳng là thiếu.
+        """
+        lines = []
+        for key in self.not_ready():
+            note = (self.readiness_notes or {}).get(key) or "(agent không ghi lý do — xem spec.yaml trong run dir)"
+            lines.append(f"- **{key}**: {note}")
+        if self.questions:
+            lines.append("")
+            lines.append("Cần trả lời trong ticket rồi đặt lại `agent:try`:")
+            lines += [f"{i}. {q}" for i, q in enumerate(self.questions, 1)]
+        return "\n".join(lines)
 
     def dumps(self) -> str:
         return yaml.safe_dump(asdict(self), allow_unicode=True, sort_keys=False)
@@ -78,6 +106,13 @@ def parse(text: str) -> Spec:
     missing_ready = [k for k in READY_KEYS if k not in spec.readiness]
     if missing_ready:
         errs.append(f"readiness thiếu {missing_ready}")
+    if not isinstance(spec.readiness_notes, dict):
+        errs.append("readiness_notes phải là mapping mục → lý do")
+    if not isinstance(spec.questions, list):
+        errs.append("questions phải là danh sách")
+    for name in ("assumptions", "out_of_scope"):
+        if not isinstance(getattr(spec, name), list):
+            errs.append(f"{name} phải là danh sách")
     if errs:
         raise SpecError("; ".join(errs))
     return spec

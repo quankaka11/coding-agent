@@ -90,12 +90,15 @@ python3 scripts/e2e_offline.py
 
 Script dựng repo giả có bug, một `origin` giả, agent giả (StubAgent), tracker và forge
 trên đĩa, rồi chạy trọn: `agent:try` → plan → duyệt → ticket con → Phase B → MR.
-Kết thúc phải in `TẤT CẢ ĐẠT`. Nó kiểm luôn 5 điểm dễ hỏng:
+Kết thúc phải in `TẤT CẢ ĐẠT`. Nó kiểm luôn 8 điểm dễ hỏng:
 
 - base lấy từ `origin`, không phải HEAD local đã lạc hậu
 - `coverage.json`, `.coverage`, `__pycache__` không lọt vào commit của agent
 - ticket kẹt `agent:running` được giao cho người; cặp gốc/con đang chờ thì không đụng
-- origin đổi file trong scope sau khi duyệt → `HUMAN_PLAN_STALE`
+- origin đổi file trong scope sau khi duyệt → `NO_MR/plan_stale`, ticket gốc tự về `agent:try`, plan lại, duyệt lại → MR
+- lượt test_gen đầu viết test pass sẵn trên code cũ → agent viết lại → MR
+- lượt implement đầu đụng file ngoài `scope.modules` → G-10 fail → agent tự sửa → vẫn ra MR
+- lint đỏ sẵn trên `main` → agent sửa bằng commit `chore:` riêng, rồi `test:` → `fix:`
 - đặt lại `agent:plan-approved` không đẻ ticket con thứ hai
 
 Hiện trường nằm ở `work/e2e-offline/` (backlog, runs, repo, worktree) để xem lại.
@@ -159,10 +162,10 @@ Cần thấy:
 
 **Cố tình cho fail** để chắc gate bắt được:
 
-- Ticket mơ hồ, không có tiêu chí → `NOMR_NOT_READY`
-- Ticket kiểu "đổi prompt cho hay hơn" → `NOMR_T4`
-- Sau khi approve, sửa file trong scope trên `origin` rồi mới `scan` → `HUMAN_PLAN_STALE`
-- Từ chối plan hai lần bằng `e2ea reject --why ...` → lần ba `NOMR_PLAN_REJECTED`
+- Ticket mơ hồ, không có tiêu chí → `NO_MR/not_ready`
+- Ticket kiểu "đổi prompt cho hay hơn" → `NO_MR/t4`
+- Sau khi approve, sửa file trong scope trên `origin` rồi mới `scan` → `NO_MR/plan_stale` và ticket gốc về `agent:try`
+- Từ chối plan hai lần bằng `e2ea reject --why ...` → lần ba `NO_MR/plan_rejected`
 
 **Vòng tự động.** Thay `scan` bằng `watch`, rồi đổi label tay trong lúc nó chạy:
 

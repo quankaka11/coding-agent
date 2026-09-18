@@ -14,7 +14,7 @@ from pathlib import Path
 from ..agent import spec as spec_mod
 from ..config.profile import Profile
 from ..core import gitutil
-from ..core.reasons import LABEL, Reason
+from ..core.reasons import LABEL, Kind, Reason, explain
 from ..core.run import RunContext, run_context
 from ..notify import NullNotifier
 from ..notify.base import MR_CREATED, NEEDS_HUMAN, NO_MR, PLAN_READY, Notice
@@ -108,12 +108,13 @@ class Orchestrator:
         with self._ctx(ticket, "B" if ticket.parent else "A") as ctx:
             ctx.on_finish(lambda c: self._finalize(ticket, c))
             if started is None:
-                ctx.decide(Reason.ERROR,
+                ctx.decide(Reason.NEEDS_HUMAN,
                            f"{ticket.id} ở `{L.RUNNING}` nhưng không có mốc bắt đầu run nào — "
                            f"có thể do người đặt category tay, hoặc run của phiên bản cũ. "
-                           f"Kiểm tra rồi đặt lại `{L.TRY}` (ticket gốc) hoặc `{L.IMPL}` (ticket chi tiết).")
+                           f"Kiểm tra rồi đặt lại `{L.TRY}` (ticket gốc) hoặc `{L.IMPL}` (ticket chi tiết).",
+                           kind=Kind.MISROUTED)
             age_min = round((time.time() - started[0]) / 60)
-            ctx.decide(Reason.HUMAN_BUDGET,
+            ctx.decide(Reason.NEEDS_HUMAN, kind=Kind.STALE_RUN, why=
                        f"run `{started[1]}` bắt đầu {age_min} phút trước và chưa chốt kết cục "
                        f"(trần {self._stale_minutes():.0f} phút) — tiến trình nhiều khả năng đã bị "
                        f"kill. Xem `runs/{ticket.id}/{started[1]}/`, rồi đặt lại category để chạy lại.",
@@ -205,13 +206,17 @@ class Orchestrator:
             # sẽ chết ở bước sau — xa chỗ gây lỗi, khó hiểu cho người vận hành.
             with self._ctx(ticket, "A") as ctx:
                 ctx.on_finish(lambda c: self._finalize(ticket, c))
-                ctx.decide(Reason.HUMAN_TICKET_MISROUTED,
+                ctx.decide(Reason.NEEDS_HUMAN,
                            f"{ticket.id} đang ở `{L.PLAN_APPROVED}` nhưng agent chưa lập plan nào "
                            f"cho ticket này — không có gì để duyệt. Đổi category sang `{L.TRY}` "
-                           f"để agent đọc ticket và lập plan trước.")
+                           f"để agent đọc ticket và lập plan trước.", kind=Kind.MISROUTED)
             return ctx.outcome.value
         comments = self.tracker.comments(ticket.id)
-        if already := [c for c in comments if DETAIL_MARK in c]:
+        # Chỉ tính ticket chi tiết sinh ra SAU plan mới nhất: plan lạc hậu → agent lập
+        # plan lại → plan mới được duyệt phải đẻ được ticket chi tiết mới; còn cùng một
+        # plan mà đặt lại `agent:plan-approved` thì vẫn không đẻ thêm.
+        last_plan = max((i for i, c in enumerate(comments) if handoff.OPEN in c), default=-1)
+        if already := [c for c in comments[last_plan + 1:] if DETAIL_MARK in c]:
             # Đặt lại `agent:plan-approved` lần nữa không được đẻ thêm một ticket
             # chi tiết nữa: hai ticket cùng một plan thì Phase B chạy hai lần và
             # mở hai MR cho cùng một việc.
@@ -246,9 +251,10 @@ class Orchestrator:
         if count > MAX_REJECTS:
             with self._ctx(ticket, "A") as ctx:
                 ctx.on_finish(lambda c: self._finalize(ticket, c))
-                ctx.decide(Reason.NOMR_PLAN_REJECTED,
+                ctx.decide(Reason.NO_MR,
                            f"plan bị từ chối {count} lần, quá trần {MAX_REJECTS} — "
                            f"ticket cần người viết lại cho rõ rồi đặt `{L.TRY}` thủ công",
+                           kind=Kind.PLAN_REJECTED,
                            reasons=[_short(r) for r in _rejections(comments) + [why]][:5])
             return ctx.outcome
         self.tracker.set_state(ticket.id, L.TRY)
@@ -262,10 +268,10 @@ class Orchestrator:
             # mới có liên kết về ticket gốc. Thiếu liên kết đó nghĩa là người gán nhầm
             # category — chặn ngay trước khi dựng worktree hoặc gọi agent.
             if not ticket.parent:
-                ctx.decide(Reason.HUMAN_TICKET_MISROUTED,
+                ctx.decide(Reason.NEEDS_HUMAN,
                            f"{ticket.id} đang ở `{L.IMPL}` nhưng không phải ticket chi tiết do "
                            f"agent sinh ra (không có liên kết về ticket gốc). Nếu đây là ticket "
-                           f"bạn tự tạo, đổi category sang `{L.TRY}`.")
+                           f"bạn tự tạo, đổi category sang `{L.TRY}`.", kind=Kind.MISROUTED)
             self._mark_running(ticket.id, ctx.run_id)
             spec, plan = _read_detail(ctx, ticket)
             tip = self._base_sha(ctx)
@@ -273,9 +279,18 @@ class Orchestrator:
             # Sửa trên đúng commit người đã duyệt, nhưng so với đầu nhánh gốc HIỆN
             # TẠI để biết phạm vi plan có còn đúng không (quyết định D1).
             if stale := _stale_files(self.repo, base, tip, spec.modules):
-                ctx.decide(Reason.HUMAN_PLAN_STALE,
-                           "code trong phạm vi plan đã đổi kể từ lúc duyệt",
-                           files=stale[:10], base=base[:8], tip=tip[:8])
+                # Plan lạc hậu không cần người: agent lập plan lại trên code mới. Ticket
+                # chi tiết này đóng NO_MR, ticket gốc quay về `agent:try` — vòng sau Phase A
+                # chạy lại, plan mới lên chờ duyệt như bình thường (điểm duyệt duy nhất R-7).
+                ctx.parent_label = L.TRY
+                self._say(ticket.parent,
+                          f"Code trong `{stale[:5]}` đã đổi trên nhánh gốc sau khi plan được duyệt "
+                          f"(`{base[:8]}` → `{tip[:8]}`). Agent sẽ lập plan lại trên code mới; "
+                          f"ticket này tự quay về `{L.TRY}`.")
+                ctx.decide(Reason.NO_MR,
+                           "code trong phạm vi plan đã đổi trên nhánh gốc kể từ lúc duyệt — "
+                           f"ticket gốc {ticket.parent} đã đặt lại `{L.TRY}` để agent lập plan mới",
+                           kind=Kind.PLAN_STALE, files=stale[:10], base=base[:8], tip=tip[:8])
             # Một tên nhánh duy nhất cho cả worktree lẫn MR. Trước đây Phase B tự
             # đặt lại tên không hậu tố khi push, nên hậu tố ngẫu nhiên mất tác dụng
             # đúng ở chỗ nó cần có: lần chạy sau đè lên nhánh của MR đang mở.
@@ -321,19 +336,18 @@ class Orchestrator:
             self.tracker.set_state(ticket.id, label)
             # Ticket gốc phải thấy được kết cục, nếu không nó kẹt ở agent:running mãi.
             if ticket.parent:
-                self.tracker.set_state(ticket.parent, label)
+                self.tracker.set_state(ticket.parent, ctx.parent_label or label)
                 self._say(ticket.parent,
-                          f"Ticket chi tiết **{ticket.id}** kết thúc: `{ctx.outcome.value}`.")
-        from ..core.reasons import explain
+                          f"Ticket chi tiết **{ticket.id}** kết thúc: `{_tag(ctx)}`.")
         if ctx.outcome is not Reason.OK:
             # `why` là câu duy nhất nói cho người vận hành biết phải làm gì. Nếu chỉ
             # gửi explain() thì thông báo chung chung tới mức phải mở code ra mới hiểu.
             why = f"\n\n{ctx.outcome_why}" if ctx.outcome_why else ""
-            self._say(ticket.id, f"**{ctx.outcome.value}** — {explain(ctx.outcome)}"
-                                 f"{why}\n\nLog: `{ctx.run_dir}`")
+            meaning = explain(ctx.outcome, ctx.outcome_kind)
+            self._say(ticket.id, f"**{_tag(ctx)}** — {meaning}{why}\n\nLog: `{ctx.run_dir}`")
             event = NEEDS_HUMAN if LABEL[ctx.outcome] == L.NEEDS_HUMAN else NO_MR
-            self._announce(ctx, event, f"{ctx.outcome.value} — {ticket.id}", ticket,
-                           f"**{ticket.title}**{why}\n\n{explain(ctx.outcome)}")
+            self._announce(ctx, event, f"{_tag(ctx)} — {ticket.id}", ticket,
+                           f"**{ticket.title}**{why}\n\n{meaning}")
         elif ctx.phase == "B":
             self._announce(ctx, MR_CREATED, f"MR đã mở — {ticket.id}", ticket,
                            f"**{ticket.title}**\n\nGate PASS và anti-gaming PASS, chờ review.",
@@ -350,6 +364,11 @@ class Orchestrator:
             if event.get("event") == "mr.created":
                 return (event.get("data") or {}).get("url", "")
         return ""
+
+
+def _tag(ctx: RunContext) -> str:
+    """`NO_MR/plan_stale` — kết cục kèm chi tiết, cho comment và thông báo."""
+    return f"{ctx.outcome.value}/{ctx.outcome_kind}" if ctx.outcome_kind else ctx.outcome.value
 
 
 def _last_human_comment(comments: list[str]) -> str:
@@ -405,9 +424,14 @@ def _stale_files(repo: Path, base: str, tip: str, modules: list[str]) -> list[st
 
 
 def _plan_comment(plan: str, spec, base_sha: str) -> str:
+    assumed = "\n".join(f"- {a}" for a in spec.assumptions) or "- (ticket đủ rõ, không có)"
+    skipped = "\n".join(f"- {o}" for o in spec.out_of_scope) or "- (không có)"
     return (f"## Plan chờ duyệt\n\n**Chưa dòng code nào được sửa.**\n\n"
             f"- Loại task: `{spec.task_type}`\n- Phạm vi: `{spec.modules}`\n"
-            f"- Base commit: `{base_sha[:12]}`\n\n---\n\n{plan}\n\n---\n\n"
+            f"- Base commit: `{base_sha[:12]}`\n\n"
+            f"**Agent đã tự chốt các giả định sau thay vì hỏi lại — sai thì từ chối plan kèm "
+            f"câu trả lời:**\n{assumed}\n\n"
+            f"**Thấy nhưng KHÔNG làm (ngoài ticket):**\n{skipped}\n\n---\n\n{plan}\n\n---\n\n"
             f"**Duyệt:** đổi label sang `{L.PLAN_APPROVED}`.\n"
             f"**Từ chối:** đổi label sang `{L.PLAN_REJECTED}` kèm comment lý do "
             f"(quá {MAX_REJECTS} lần từ chối thì ticket chuyển `{L.NO_MR}`).")
