@@ -11,7 +11,7 @@ from pathlib import Path
 
 from ..core import gitutil, parsers
 from . import astcheck
-from ..config.profile import COVERAGE_FILE, Profile, matches
+from ..config.profile import Profile, matches
 from ..core.run import RunContext
 
 KILLED, SURVIVED = "killed", "survived"
@@ -59,7 +59,7 @@ def run(ctx: RunContext, prof: Profile, repo: Path, base_sha: str,
     return out
 
 
-def covered_lines(prof: Profile, repo: Path, modules: list[str]) -> dict[str, set[int]]:
+def covered_lines(prof: Profile, coverage_json: Path, modules: list[str]) -> dict[str, set[int]]:
     """Dòng nguồn trong phạm vi mà test đang chạy qua — mục tiêu đột biến cho T2.
 
     T2 không sửa dòng code nào, nên "dòng mới" là tập rỗng và cách chọn mục tiêu
@@ -67,7 +67,7 @@ def covered_lines(prof: Profile, repo: Path, modules: list[str]) -> dict[str, se
     test bù vừa tuyên bố là đang kiểm: đột biến nó mà test vẫn xanh thì lời tuyên
     bố đó rỗng.
     """
-    cov = parsers.coverage_json(repo / COVERAGE_FILE)
+    cov = parsers.coverage_json(coverage_json)
     if cov is None:
         return {}
     scope = [m.rstrip("/") for m in modules]

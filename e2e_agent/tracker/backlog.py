@@ -19,6 +19,11 @@ class BacklogError(RuntimeError):
     pass
 
 
+#: Backlog cố định 4 trạng thái chuẩn: 1 Open, 2 In Progress, 3 Resolved, 4 Closed.
+#: Trạng thái tự tạo có id lớn hơn và đều được coi là "đang mở".
+CLOSED_STATUS_ID = 4
+
+
 class BacklogTracker:
     def __init__(self, space: str, project: str, api_key_env: str = "BACKLOG_API_KEY",
                  issue_type_id: str | int | None = None, timeout: int = 30) -> None:
@@ -34,6 +39,7 @@ class BacklogTracker:
                                f"{api_key_env.lower()}=… trong .env")
         self._project_info: dict | None = None
         self._categories: dict[str, int] | None = None
+        self._open_statuses: list[int] | None = None
 
     # -- REST ------------------------------------------------------------
     def _call(self, method: str, path: str, params: list[tuple[str, str]] | None = None):
@@ -94,12 +100,26 @@ class BacklogTracker:
             url=f"{self.base}/view/{raw['issueKey']}",
             parent=_meta(body, "parent"), base_sha=_meta(body, "base_sha"))
 
+    def _open_status_ids(self) -> list[int]:
+        """Mọi trạng thái trừ Closed. Không đọc được thì trả rỗng = không lọc."""
+        if self._open_statuses is None:
+            try:
+                statuses = self._call("GET", f"/projects/{self.project}/statuses")
+                self._open_statuses = [int(s["id"]) for s in statuses
+                                       if int(s["id"]) != CLOSED_STATUS_ID]
+            except (BacklogError, KeyError, ValueError):
+                self._open_statuses = []
+        return self._open_statuses
+
     def list_by_label(self, label: str) -> list[Ticket]:
         ids = self._category_ids()
         if label not in ids:
             return []
         params = [("projectId[]", str(self.info["id"])), ("categoryId[]", str(ids[label])),
                   ("count", "50"), ("sort", "created"), ("order", "asc")]
+        # Ticket đã Closed nhưng còn mang category `agent:try` không được chạy lại
+        # — GitLab lọc `state=opened`, Backlog phải lọc bằng statusId.
+        params += [("statusId[]", str(i)) for i in self._open_status_ids()]
         return [self._to_ticket(x) for x in self._call("GET", "/issues", params)]
 
     def get(self, ticket_id: str) -> Ticket:

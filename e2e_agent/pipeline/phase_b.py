@@ -106,7 +106,8 @@ def run(ctx: RunContext, prof: Profile, repo: Path, work: Path, ticket: Ticket,
 
     if prof.mutation_cfg("enabled") and spec.task_type in ("T2", "T3"):
         with ctx.stage("mutation"):
-            targets = mutation.covered_lines(prof, work, spec.modules) if is_t2 else None
+            targets = (mutation.covered_lines(prof, baseline_mod.coverage_path(ctx), spec.modules)
+                       if is_t2 else None)
             evidence["mutation"] = mutation.run(ctx, prof, work, base.base_sha, targets)
 
     (ctx.run_dir / "evidence.json").write_text(

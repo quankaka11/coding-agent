@@ -14,8 +14,8 @@ from typing import Any, Callable
 
 from ..core import gitutil, parsers
 from . import astcheck
-from .baseline import Baseline
-from ..config.profile import COVERAGE_FILE, Profile, matches
+from .baseline import Baseline, coverage_path
+from ..config.profile import Profile, matches
 from ..core.run import RunContext
 
 PASS, FAIL, SKIP = "pass", "fail", "out_of_scope"
@@ -52,6 +52,8 @@ class Context:
     acceptance_ids: list[str] = field(default_factory=list)
     #: `scope.modules` của spec — phạm vi mà người đã duyệt.
     modules: list[str] = field(default_factory=list)
+    #: coverage.json nằm trong run_dir (xem baseline.coverage_path), không trong cây code.
+    coverage_path: Path | None = None
 
     def is_test_file(self, path: str) -> bool:
         return matches(path, self.prof.test_globs) is not None
@@ -173,7 +175,7 @@ def g6_real_asserts(c: Context) -> RuleResult:
 
 def g7_coverage(c: Context) -> RuleResult:
     """Coverage toàn repo không giảm VÀ ≥ ngưỡng % dòng mới được test chạy qua (luật AND, quyết định B3)."""
-    cov = parsers.coverage_json(c.repo / COVERAGE_FILE)
+    cov = parsers.coverage_json(c.coverage_path) if c.coverage_path else None
     if cov is None:
         return RuleResult("G-7", SKIP,
                           "chưa đo được coverage — cần checks.coverage: available "
@@ -289,7 +291,7 @@ def run(ctx: RunContext, prof: Profile, repo: Path, base_sha: str,
                 gate_report=gate_report, changed=gitutil.changed_files(repo, base_sha),
                 new_lines=gitutil.new_lines(repo, base_sha), evidence=evidence,
                 task_type=task_type, acceptance_ids=acceptance_ids or [],
-                modules=modules or [])
+                modules=modules or [], coverage_path=coverage_path(ctx))
     ctx.emit("antigaming.start", changed_files=len(c.changed), base_sha=base_sha[:8])
 
     results = [rule(c) for rule in RULES]

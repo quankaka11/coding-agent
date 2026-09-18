@@ -6,7 +6,9 @@
 """
 from __future__ import annotations
 
+import re
 import secrets
+import time
 from pathlib import Path
 
 from ..agent import spec as spec_mod
@@ -27,6 +29,12 @@ MAX_REJECTS = 2
 AGENT_MARK = "<!-- e2ea:agent -->"
 REJECT_MARK = "<!-- e2ea:rejected -->"
 DETAIL_MARK = "<!-- e2ea:detail -->"
+#: `<!-- e2ea:running <epoch> <run_id> -->` — mốc để biết một run đã bắt đầu từ bao
+#: giờ. Không có mốc này thì `agent:running` là trạng thái không có đường ra: tiến
+#: trình bị kill là ticket nằm đó vĩnh viễn, và không ai phân biệt được "đang chạy"
+#: với "đã chết từ tuần trước".
+RUNNING_MARK = "<!-- e2ea:running"
+_RUNNING_RE = re.compile(re.escape(RUNNING_MARK) + r"\s+(\d+)\s+(\S+)\s*-->")
 
 
 class Orchestrator:
@@ -47,6 +55,9 @@ class Orchestrator:
     def scan_once(self) -> list[tuple[str, str]]:
         """Xử lý nhiều nhất một ticket cho mỗi trạng thái. Trả về [(ticket, kết cục)]."""
         done: list[tuple[str, str]] = []
+        # Dọn ticket kẹt trước: chúng không nằm trong bất kỳ hàng đợi nào bên dưới.
+        for ticket in self._stuck():
+            done.append((ticket.id, self.recover(ticket).value))
         for ticket in self._waiting(L.PLAN_APPROVED):
             done.append((ticket.id, self.promote(ticket)))
         # Người đổi category sang `agent:plan-rejected` là một nước đi hợp lệ mà
@@ -63,6 +74,76 @@ class Orchestrator:
     def _waiting(self, label: str) -> list[Ticket]:
         """Ticket cũ nhất đang chờ ở trạng thái này, bỏ qua ticket đã đầu hàng."""
         return [t for t in self.tracker.list_by_label(label) if t.id not in self.skip][:1]
+
+    # -- ticket kẹt ở agent:running ---------------------------------------
+    def _stale_minutes(self) -> float:
+        explicit = self.prof.limit("running_stale_min")
+        return float(explicit) if explicit else 2.0 * float(self.prof.limit("run_timeout_min"))
+
+    def _stuck(self) -> list[Ticket]:
+        """Ticket ở `agent:running` mà không có run nào còn sống đứng sau nó.
+
+        Ticket gốc đang chờ ticket con (đã có DETAIL_MARK, hoặc có con ở
+        `agent:impl`) không tính: trạng thái của nó do con báo về khi kết thúc.
+        """
+        waiting_parents = {t.parent for t in self.tracker.list_by_label(L.IMPL) if t.parent}
+        stale_after = self._stale_minutes() * 60
+        out: list[Ticket] = []
+        for ticket in self.tracker.list_by_label(L.RUNNING):
+            if ticket.id in self.skip:
+                continue
+            comments = self.tracker.comments(ticket.id)
+            if not ticket.parent and (ticket.id in waiting_parents
+                                      or any(DETAIL_MARK in c for c in comments)):
+                continue
+            started = _last_running_mark(comments)
+            if started is not None and time.time() - started[0] < stale_after:
+                continue          # run này có thể vẫn đang chạy ở tiến trình khác
+            out.append(ticket)
+        return out
+
+    def recover(self, ticket: Ticket) -> Reason:
+        """Giao một ticket kẹt cho người, kèm lý do đủ để họ biết nhìn vào đâu."""
+        started = _last_running_mark(self.tracker.comments(ticket.id))
+        with self._ctx(ticket, "B" if ticket.parent else "A") as ctx:
+            ctx.on_finish(lambda c: self._finalize(ticket, c))
+            if started is None:
+                ctx.decide(Reason.ERROR,
+                           f"{ticket.id} ở `{L.RUNNING}` nhưng không có mốc bắt đầu run nào — "
+                           f"có thể do người đặt category tay, hoặc run của phiên bản cũ. "
+                           f"Kiểm tra rồi đặt lại `{L.TRY}` (ticket gốc) hoặc `{L.IMPL}` (ticket chi tiết).")
+            age_min = round((time.time() - started[0]) / 60)
+            ctx.decide(Reason.HUMAN_BUDGET,
+                       f"run `{started[1]}` bắt đầu {age_min} phút trước và chưa chốt kết cục "
+                       f"(trần {self._stale_minutes():.0f} phút) — tiến trình nhiều khả năng đã bị "
+                       f"kill. Xem `runs/{ticket.id}/{started[1]}/`, rồi đặt lại category để chạy lại.",
+                       stale_run=started[1], age_min=age_min)
+        return ctx.outcome
+
+    def _mark_running(self, ticket_id: str, run_id: str) -> None:
+        self.tracker.set_state(ticket_id, L.RUNNING)
+        self._say(ticket_id, f"{RUNNING_MARK} {int(time.time())} {run_id} -->\n"
+                             f"Agent bắt đầu xử lý (run `{run_id}`).")
+
+    def _base_sha(self, ctx: RunContext) -> str:
+        """Đầu nhánh gốc TRÊN REMOTE. Không có remote thì HEAD local, và nói rõ."""
+        branch = self.prof.base_branch
+        # Forge biết cách đăng nhập (repo private) thì fetch thẳng bằng URL của nó;
+        # không thì trông vào remote `origin` của clone.
+        remote = getattr(self.forge, "fetch_url", lambda: None)() or "origin"
+        try:
+            tip = gitutil.remote_tip(self.repo, branch, remote=remote)
+        except (RuntimeError, OSError) as exc:
+            tip = None
+            ctx.emit("base.fetch_failed", level="warn", branch=branch, error=str(exc)[:200],
+                     note="không fetch được — dùng HEAD local, có thể lạc hậu so với remote")
+        if tip:
+            ctx.emit("base.synced", branch=branch, sha=tip[:8])
+            return tip
+        head = gitutil.head_sha(self.repo)
+        ctx.emit("base.local", level="info", sha=head[:8],
+                 note="repo không có remote origin — dùng HEAD local")
+        return head
 
     def give_up(self, ticket_id: str, why: str) -> None:
         """Ngừng thử lại một ticket và giao hẳn cho người.
@@ -81,13 +162,13 @@ class Orchestrator:
             # Phase A xong là `agent:plan-ready`, không phải nhãn mặc định của OK.
             ctx.on_finish(lambda c: self._finalize(ticket, c,
                                                    skip_label=c.outcome is Reason.OK))
-            self.tracker.set_state(ticket.id, L.RUNNING)
+            self._mark_running(ticket.id, ctx.run_id)
             rejections = _rejections(self.tracker.comments(ticket.id))
             # Phase A mang tiếng "chỉ đọc" nhưng vẫn chạy với Write/Edit/Bash, và
             # trước đây chạy thẳng trong repo gốc — lời dặn trong skill là lưới duy
             # nhất. Cho nó một worktree riêng: agent giữ nguyên mọi công cụ (Discovery
             # cần chạy thử lệnh), còn repo của người thì không ai chạm tới được.
-            base_sha = gitutil.head_sha(self.repo)
+            base_sha = self._base_sha(ctx)
             work = sandbox.create_detached(
                 self.repo, sandbox.under(self.repo, self.work_root) / f"read-{ticket.id}",
                 base_sha)
@@ -136,6 +217,10 @@ class Orchestrator:
             # mở hai MR cho cùng một việc.
             self.tracker.set_state(ticket.id, L.RUNNING)
             return f"đã có ticket chi tiết từ trước — {_short(already[-1], 80)}"
+        # Rời `agent:plan-approved` TRƯỚC khi tạo ticket con. Đổ giữa hai bước thì
+        # ticket gốc ở `agent:running` có con ở `agent:impl` — _stuck() nhận ra cặp
+        # này và không đụng. Thứ tự ngược lại để hở một cửa sổ đẻ hai ticket con.
+        self.tracker.set_state(ticket.id, L.RUNNING)
         detail = self.tracker.create_ticket(
             title=f"[impl] {ticket.title}",
             body=f"<!-- base_sha: {packed.base_sha} -->\n\n"
@@ -144,7 +229,6 @@ class Orchestrator:
             labels=[L.IMPL], parent=ticket.id)
         self._say(ticket.id, f"{DETAIL_MARK}\nPlan đã duyệt. Ticket chi tiết: **{detail.id}** "
                              f"{detail.url}\nPhase B sẽ chạy trên ticket đó.")
-        self.tracker.set_state(ticket.id, L.RUNNING)
         return f"đã tạo ticket chi tiết {detail.id}"
 
     def reject(self, ticket: Ticket, why: str = "") -> Reason:
@@ -182,12 +266,16 @@ class Orchestrator:
                            f"{ticket.id} đang ở `{L.IMPL}` nhưng không phải ticket chi tiết do "
                            f"agent sinh ra (không có liên kết về ticket gốc). Nếu đây là ticket "
                            f"bạn tự tạo, đổi category sang `{L.TRY}`.")
-            self.tracker.set_state(ticket.id, L.RUNNING)
+            self._mark_running(ticket.id, ctx.run_id)
             spec, plan = _read_detail(ctx, ticket)
-            base = ticket.base_sha or gitutil.head_sha(self.repo)
-            if stale := _stale_files(self.repo, base, spec.modules):
+            tip = self._base_sha(ctx)
+            base = ticket.base_sha or tip
+            # Sửa trên đúng commit người đã duyệt, nhưng so với đầu nhánh gốc HIỆN
+            # TẠI để biết phạm vi plan có còn đúng không (quyết định D1).
+            if stale := _stale_files(self.repo, base, tip, spec.modules):
                 ctx.decide(Reason.HUMAN_PLAN_STALE,
-                           "code trong phạm vi plan đã đổi kể từ lúc duyệt", files=stale[:10])
+                           "code trong phạm vi plan đã đổi kể từ lúc duyệt",
+                           files=stale[:10], base=base[:8], tip=tip[:8])
             # Một tên nhánh duy nhất cho cả worktree lẫn MR. Trước đây Phase B tự
             # đặt lại tên không hậu tố khi push, nên hậu tố ngẫu nhiên mất tác dụng
             # đúng ở chỗ nó cần có: lần chạy sau đè lên nhánh của MR đang mở.
@@ -297,10 +385,20 @@ def _read_detail(ctx: RunContext, ticket: Ticket) -> tuple[spec_mod.Spec, str]:
         ctx.decide(Reason.ERROR, f"spec trong ticket chi tiết sai schema: {exc}")
 
 
-def _stale_files(repo: Path, base: str, modules: list[str]) -> list[str]:
+def _last_running_mark(comments: list[str]) -> tuple[float, str] | None:
+    """(epoch bắt đầu, run_id) của mốc running MỚI NHẤT, hoặc None."""
+    for text in reversed(comments):
+        if m := _RUNNING_RE.search(text):
+            return float(m.group(1)), m.group(2)
+    return None
+
+
+def _stale_files(repo: Path, base: str, tip: str, modules: list[str]) -> list[str]:
     """Quyết định D1: plan lạc hậu thì trả người, không tự đoán."""
+    if base == tip:
+        return []
     try:
-        changed = gitutil.changed_files(repo, base)
+        changed = gitutil.changed_files(repo, base, tip)
     except RuntimeError:
         return []
     return [f for f in changed if any(f.startswith(m.rstrip("/")) for m in modules)]

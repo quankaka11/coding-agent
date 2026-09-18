@@ -23,6 +23,9 @@ DEFAULT_LIMITS = {
     "gate_fix_rounds": 2, "same_error_limit": 3,
     "flaky_rerun": 3, "run_timeout_min": 60, "run_cost_cap_usd": 15,
     "cmd_timeout_sec": 900, "coverage_new_line_pct": 80,
+    #: Ticket ở `agent:running` quá số phút này mà không chốt kết cục thì coi là
+    #: tiến trình đã chết và giao cho người. None = gấp đôi run_timeout_min.
+    "running_stale_min": None,
 }
 #: `timeout_sec` là trần cho CẢ bước mutation; `per_mutant_timeout_sec` là trần cho
 #: một lần chạy test. Dùng chung một số thì một mutant chậm nuốt trọn ngân sách.

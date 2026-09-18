@@ -10,3 +10,6 @@ dist/
 build/
 .venv/
 .env
+repos/
+venvs/
+.idea/

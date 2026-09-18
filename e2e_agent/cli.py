@@ -146,6 +146,142 @@ def cmd_check(args) -> int:
     return _exit(ctx)
 
 
+# -- một lệnh cho repo mới: .env → clone → hồ sơ → doctor → category → watch ----
+
+_ENV_HELP = """Cần trong .env (tại thư mục đang chạy) hoặc biến môi trường:
+  repo_url=https://git.hblab.vn/nhom/ten-repo.git   # bắt buộc
+  gitlab_token=...                                   # bắt buộc với repo GitLab, vai trò Developer+
+  backlog_space=xxx.backlog.com                      # thiếu cả hai dòng backlog → ticket trên đĩa (offline)
+  backlog_project=PROJKEY
+  backlog_api_key=...
+  google_chat_webhook=https://chat.googleapis.com/... # tuỳ chọn"""
+
+
+def _layout(args) -> dict:
+    """Mọi thứ nằm dưới --dir: repos/<tên>, profiles/<tên>.yaml, runs/, work/<tên>."""
+    from .config import autoprofile
+    from .core.secrets import read_secret
+
+    root = Path(args.dir).resolve()
+    from .core import secrets as secrets_mod
+    if (root / ".env").is_file() and (root / ".env") not in secrets_mod.EXTRA_ENV_FILES:
+        secrets_mod.EXTRA_ENV_FILES.append(root / ".env")
+    url = read_secret("repo_url")
+    if not url:
+        raise ProfileError("thiếu repo_url.\n" + _ENV_HELP)
+    if "://" in url or url.startswith("git@"):
+        forge_url, project, name = autoprofile.parse_repo_url(url)
+        forge = {"kind": "gitlab", "url": forge_url, "project": project, "token_env": "gitlab_token"}
+        if not read_secret("gitlab_token"):
+            raise ProfileError("repo_url là GitLab nhưng thiếu gitlab_token.\n" + _ENV_HELP)
+    else:                                    # đường dẫn trên đĩa → chạy offline
+        name, forge = Path(url).name.removesuffix(".git"), None
+    tracker = None
+    if read_secret("backlog_space") and read_secret("backlog_project"):
+        if not read_secret("backlog_api_key"):
+            raise ProfileError("có backlog_space/backlog_project nhưng thiếu backlog_api_key.\n" + _ENV_HELP)
+        tracker = {"kind": "backlog", "space": read_secret("backlog_space"),
+                   "project": read_secret("backlog_project"), "api_key_env": "backlog_api_key"}
+    notify = ({"kind": "webhook", "url_env": "google_chat_webhook"}
+              if read_secret("google_chat_webhook") else None)
+    return {"root": root, "url": url, "name": name, "repo": root / "repos" / name,
+            "profile": root / "profiles" / f"{name}.yaml", "forge": forge, "tracker": tracker,
+            "notify": notify, "runs": root / "runs", "work": root / "work" / name,
+            "venv": root / "venvs" / name}
+
+
+def _prepare_env(args, lay: dict) -> tuple[str, list[str]]:
+    """venv + dependency của repo. Trả về (python dùng trong commands.*, TODO chưa xong).
+
+    TODO ở đây phải CHẶN `up`: môi trường test hỏng thì mọi ticket đều kết thúc
+    NOMR_BASELINE_RED, và người vận hành đọc ra là "repo đỏ" chứ không phải "venv sai".
+    """
+    from .config import autoprofile
+    if args.no_venv:
+        return "python3", []
+    print(f"== môi trường test: {lay['venv']}")
+    python, notes, todos = autoprofile.ensure_venv(lay["repo"], lay["venv"])
+    for n in notes:
+        print(f"  {n}")
+    for t in todos:
+        print(f"  TODO: {t}")
+    return python, todos
+
+
+def _clone_if_missing(lay: dict) -> None:
+    import subprocess
+    repo = lay["repo"]
+    if (repo / ".git").exists():
+        return
+    repo.parent.mkdir(parents=True, exist_ok=True)
+    url = lay["url"]
+    if lay["forge"]:
+        from .core.secrets import read_secret
+        host = lay["forge"]["url"].split("://", 1)[-1]
+        auth_url = f"https://oauth2:{read_secret('gitlab_token')}@{host}/{lay['forge']['project']}.git"
+    else:
+        auth_url = url
+    print(f"clone {url} → {repo}")            # KHÔNG in auth_url, kể cả đã che
+    proc = subprocess.run(["git", "clone", "--quiet", auth_url, str(repo)], capture_output=True,
+                          text=True, stdin=subprocess.DEVNULL)
+    if proc.returncode != 0:
+        raise ProfileError(f"clone thất bại: {gitutil.redact_url(proc.stderr.strip())}")
+    if lay["forge"]:
+        # Không để token nằm lại trong .git/config: agent chạy Bash trong worktree đọc được.
+        subprocess.run(["git", "remote", "set-url", "origin", url], cwd=repo, check=False)
+
+
+def cmd_init(args) -> int:
+    """Sinh hồ sơ cho repo mới từ .env và nội dung repo. Không ghi đè hồ sơ đã có."""
+    from .config import autoprofile
+    lay = _layout(args)
+    _clone_if_missing(lay)
+    if lay["profile"].exists() and not args.force:
+        print(f"đã có hồ sơ {lay['profile']} — giữ nguyên (dùng --force để sinh lại)")
+        return 1 if _prepare_env(args, lay)[1] else 0
+    python, env_todos = _prepare_env(args, lay)
+    draft = autoprofile.generate(lay["repo"], lay["name"], tracker=lay["tracker"],
+                                 forge=lay["forge"], notify=lay["notify"], python=python)
+    draft.todos = env_todos + draft.todos
+    lay["profile"].parent.mkdir(parents=True, exist_ok=True)
+    lay["profile"].write_text(draft.dumps(), encoding="utf-8")
+    print(f"đã sinh {lay['profile']}")
+    for n in draft.notes:
+        print(f"  đoán: {n}")
+    for t in draft.todos:
+        print(f"  TODO: {t}")
+    return 1 if draft.todos else 0
+
+
+def cmd_up(args) -> int:
+    """init (nếu chưa) → doctor → tạo category → watch. Một lệnh cho repo mới."""
+    lay = _layout(args)
+    if not lay["profile"].exists():
+        if cmd_init(args) != 0:
+            print("\nhồ sơ còn TODO — sửa rồi chạy lại `e2ea up`", file=sys.stderr)
+            return 2
+    else:
+        _clone_if_missing(lay)
+        if _prepare_env(args, lay)[1]:   # dependency có thể đã đổi từ lần trước
+            print("\nmôi trường test còn TODO — sửa rồi chạy lại `e2ea up`", file=sys.stderr)
+            return 2
+    args.profile, args.repo = str(lay["profile"]), str(lay["repo"])
+    args.runs_root, args.work_root = str(lay["runs"]), str(lay["work"])
+
+    print(f"== doctor {lay['profile'].name}")
+    if cmd_doctor(args) != 0:
+        print(f"\nsửa {lay['profile']} rồi chạy lại", file=sys.stderr)
+        return 2
+    print("== category trên tracker")
+    cmd_labels_init(args)
+    if lay["tracker"] is None or lay["forge"] is None:
+        print("== CHẾ ĐỘ OFFLINE: ticket/MR ghi vào", lay["profile"].parent / "backlog")
+    if args.once:
+        return cmd_scan(args)
+    print(f"== watch mỗi {args.interval}s — Ctrl-C để dừng. Tạo ticket với category `{L.TRY}`.")
+    return cmd_watch(args)
+
+
 def _orchestrator(args, prof, repo):
     base_dir = Path(args.profile).resolve().parent
     tracker = tracker_mod.make(prof, base_dir)
@@ -327,6 +463,27 @@ def _merge_evidence(ctx: RunContext, extra: dict) -> None:
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="e2ea", description="Lớp cưỡng chế của E2E Coding Agent")
     sub = ap.add_subparsers(dest="cmd", required=True)
+
+    def _onboard(name, help_text):
+        sp = sub.add_parser(name, help=help_text, epilog=_ENV_HELP,
+                            formatter_class=argparse.RawDescriptionHelpFormatter)
+        sp.add_argument("--dir", default=".", help="thư mục làm việc: repos/, profiles/, runs/, work/")
+        sp.add_argument("--log-level", default="info", choices=("debug", "info", "warn", "error"))
+        sp.add_argument("--quiet", action="store_true")
+        sp.add_argument("--no-venv", action="store_true",
+                        help="không tạo venv/cài dependency; commands.* dùng python3 của máy")
+        sp.set_defaults(task_id="-", run_dir=None)
+        return sp
+
+    ini = _onboard("init", "clone repo từ .env và sinh hồ sơ tự động (không ghi đè)")
+    ini.add_argument("--force", action="store_true", help="sinh lại hồ sơ dù đã có")
+    ini.set_defaults(func=cmd_init)
+    up = _onboard("up", "một lệnh cho repo mới: .env → clone → hồ sơ → doctor → category → watch")
+    up.add_argument("--force", action="store_true", help="sinh lại hồ sơ dù đã có")
+    up.add_argument("--interval", type=int, default=60)
+    up.add_argument("--max-cycles", type=int, default=None)
+    up.add_argument("--once", action="store_true", help="quét một vòng rồi thoát thay vì watch")
+    up.set_defaults(func=cmd_up)
 
     d = sub.add_parser("doctor", help="soát hồ sơ repo với repo thật")
     d.add_argument("--profile", required=True)

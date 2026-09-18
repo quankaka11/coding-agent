@@ -42,6 +42,11 @@ class GitLabForge:
                     if exc.code == 403 else "")
             raise GitLabError(f"{method} {path} → {exc.code}: {detail}{hint}") from None
 
+    def fetch_url(self) -> str:
+        """URL có token để fetch/clone repo private mà không lưu token vào .git/config."""
+        host = self.url.split("://", 1)[-1]
+        return f"https://oauth2:{self.token}@{host}/{self.project_path}.git"
+
     def push_branch(self, repo: Path, branch: str) -> None:
         """Push nhánh mới. KHÔNG force.
 

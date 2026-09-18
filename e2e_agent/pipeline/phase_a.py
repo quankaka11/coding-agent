@@ -88,7 +88,6 @@ def _parse_spec(ctx: RunContext, agent, repo: Path, result: AgentResult, ticket:
             spec = spec_mod.parse(retry.text)
         except spec_mod.SpecError as exc2:
             ctx.decide(Reason.ERROR, f"spec agent sinh ra sai schema sau 2 lần: {exc2}")
-            raise
     spec.task_id = spec.task_id or ticket.id
     spec.source_ticket = spec.source_ticket or ticket.url or ticket.id
     return spec
@@ -113,7 +112,7 @@ def _ticket_block(ticket: Ticket) -> str:
 
 
 def _spec_block(spec) -> str:
-    lines = [f"## Spec\n", f"- Mục tiêu: {spec.objective}", f"- Loại: {spec.task_type}",
+    lines = ["## Spec\n", f"- Mục tiêu: {spec.objective}", f"- Loại: {spec.task_type}",
              f"- Phạm vi: {spec.modules}"]
     lines += [f"- {ac['id']}: {ac['text']}" for ac in spec.acceptance_criteria]
     if spec.repro_steps:

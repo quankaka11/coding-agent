@@ -19,6 +19,33 @@ def head_sha(repo: Path) -> str:
     return _git(repo, "rev-parse", "HEAD").strip()
 
 
+def remote_tip(repo: Path, branch: str, remote: str = "origin", timeout: int = 120) -> str | None:
+    """Fetch `branch` từ remote và trả về sha đầu nhánh ở đó. Không có remote thì None.
+
+    Base của mọi run phải là đầu nhánh TRÊN REMOTE, không phải HEAD của checkout
+    local: máy chạy watch không ai pull thì agent lập plan trên code cũ, MR mở
+    lên nhánh gốc với base lệch, và stale-check của Phase B so với một HEAD cũng
+    lạc hậu y như vậy. Dùng FETCH_HEAD để không phụ thuộc refspec của remote.
+    """
+    # `remote` là tên remote (origin) hoặc URL có sẵn thông tin đăng nhập do forge
+    # cấp — cách sau không lưu token vào .git/config của clone.
+    is_url = "://" in remote or remote.startswith("git@")
+    if not is_url and remote not in _git(repo, "remote").split():
+        return None
+    proc = subprocess.run(["git", "fetch", "--quiet", remote, branch], cwd=repo,
+                          capture_output=True, text=True, timeout=timeout,
+                          stdin=subprocess.DEVNULL)
+    if proc.returncode != 0:
+        raise RuntimeError(f"git fetch {redact_url(remote)} {branch}: "
+                           f"{redact_url(proc.stderr.strip())}")
+    return _git(repo, "rev-parse", "FETCH_HEAD").strip()
+
+
+def redact_url(text: str) -> str:
+    """Che `user:token@` trong mọi URL — lỗi git in nguyên URL fetch."""
+    return re.sub(r"://[^/]*@", "://«redacted»@", text)
+
+
 def is_dirty(repo: Path) -> bool:
     """Chỉ tính thay đổi trên file đang theo dõi.
 

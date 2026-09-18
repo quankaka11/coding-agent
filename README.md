@@ -7,7 +7,7 @@ code, không phải prompt — agent không đọc, không sửa, không tự ch
 Lớp "phán đoán" (Intake / Discovery / Planning / Test-gen / Implement) là skill của
 Claude Code headless, nằm ở `skills/`.
 
-**Hướng dẫn chạy full luồng: [docs/HUONG-DAN-SU-DUNG.md](docs/HUONG-DAN-SU-DUNG.md).**
+**Hướng dẫn chạy full luồng: [docs/HUONG-DAN-SU-DUNG.md](docs/HUONG-DAN-SU-DUNG.md). Cách test ba mức (offline → Claude thật → Backlog/GitLab thật): [TESTING.md](TESTING.md).**
 
 ```
 e2e_agent/
@@ -26,8 +26,39 @@ e2e_agent/
 ## Cài
 
 ```bash
-pip install -e ".[dev]"     # hoặc: PYTHONPATH=src python3 -m e2e_agent.cli
+pip install -e ".[dev]"     # hoặc: PYTHONPATH=. python3 -m e2e_agent.cli
 ```
+
+## Đưa sang repo mới: một lệnh
+
+Tạo một thư mục làm việc, trong đó có `.env`:
+
+```
+repo_url=https://git.hblab.vn/nhom/ten-repo.git
+gitlab_token=...                 # vai trò Developer trở lên
+backlog_space=xxx.backlog.com
+backlog_project=PROJKEY
+backlog_api_key=...
+google_chat_webhook=...          # tuỳ chọn
+```
+
+```bash
+cd thu-muc-lam-viec && e2ea up
+```
+
+`up` clone repo vào `repos/`, tạo venv riêng trong `venvs/<tên>` và cài dependency của
+repo cùng pytest, pytest-cov, ruff vào đó (đọc `pyproject.toml` kể cả extras, `setup.py`,
+`requirements*.txt`), thử `pytest --collect-only` để chắc môi trường chạy được, soi repo
+để sinh `profiles/<tên>.yaml` (thư mục nguồn, thư mục test, lint, coverage — lệnh test trỏ
+thẳng vào venv), chạy `doctor`, tạo 9 category trên Backlog rồi vào vòng `watch`. Từ đó chỉ cần tạo ticket với category `agent:try` trên Backlog và đổi
+sang `agent:plan-approved` khi duyệt plan. Hồ sơ sinh ra ghi rõ từng điều đã đoán ở đầu
+file; sửa tay xong thì `up` lần sau giữ nguyên. Thiếu hai dòng `backlog_*` hoặc `repo_url`
+là đường dẫn trên đĩa thì chạy offline: ticket và MR ghi vào `profiles/backlog/`.
+
+`e2ea init` chỉ làm bước clone, venv và sinh hồ sơ, để xem trước khi chạy. `--no-venv`
+bỏ qua bước cài và dùng `python3` của máy.
+
+Hai việc còn phải làm tay: đăng nhập `claude` trên máy chạy `up`, và duyệt plan trên Backlog.
 
 ## Dùng
 
@@ -103,6 +134,7 @@ agent_gate:
     - pip install -q pytest && pip install -q --index-url "$E2EA_INDEX" e2e-agent
     - e2ea check --profile ci/repo-profile.yaml --repo . --task-id "$CI_MERGE_REQUEST_IID"
         --base-sha "$CI_MERGE_REQUEST_DIFF_BASE_SHA" --run-dir runs/ci
+        --task-meta-env CI_MERGE_REQUEST_DESCRIPTION
         --work-root "$CI_BUILDS_DIR/e2ea-work" --verify-from-base --quiet
     - e2ea report --run-dir runs/ci --quiet-report
   artifacts:
@@ -111,6 +143,9 @@ agent_gate:
   rules:
     - if: $CI_MERGE_REQUEST_LABELS =~ /agent-generated/
 ```
+
+`--task-meta-env CI_MERGE_REQUEST_DESCRIPTION` đọc `task_type`, `scope.modules` và danh
+sách AC từ payload ẩn mà Phase B nhúng vào mô tả MR — thiếu cờ này G-8 và G-10 luôn SKIP trên CI.
 
 `--verify-from-base` là chỗ quan trọng: CI **tự dựng lại** baseline và bằng chứng
 fail-trước từ base commit thay vì đọc file agent nộp. Thiếu cờ này thì G-1 và G-4 —
@@ -132,7 +167,8 @@ lý do — không có lối thoát im lặng, và có test canh điều đó. `e
 ## Test
 
 ```bash
-python3 -m pytest tests/ -q      # 130 test, ~3 phút
+python3 scripts/e2e_offline.py   # trọn vòng ticket → MR, không LLM, không mạng (~30 giây)
+python3 -m pytest tests/ -q      # 130 test, ~3 phút (tests/ hiện chưa nằm trong git)
 ```
 
 Không dùng repo thật: `tests/conftest.py` dựng repo git tí hon ngay lúc chạy, mỗi

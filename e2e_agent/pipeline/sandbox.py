@@ -73,7 +73,7 @@ def install_guardrails(work: Path, profile_path: Path, package_root: Path | None
     claude_dir.mkdir(parents=True, exist_ok=True)
     command = hook_command(profile_path, package_root)
     settings = {"hooks": {"PreToolUse": [{
-        "matcher": "Write|Edit|NotebookEdit",
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
         "hooks": [{"type": "command", "command": command}]}]}}
     (claude_dir / "settings.json").write_text(json.dumps(settings, indent=2), encoding="utf-8")
 
@@ -117,8 +117,20 @@ def hook_importable(package_root: Path | None = None) -> bool:
     return proc.returncode == 0
 
 
+#: Artefact của tool test/coverage không bao giờ được vào commit của agent. Nếu
+#: repo đích không gitignore chúng, `git add -A` gom hết và G-3 báo "ngoài
+#: allowed_paths" — một run đúng bị kết HUMAN_ANTIGAMING oan.
+ARTEFACT_EXCLUDES = [
+    ":(exclude)coverage.json", ":(exclude).coverage", ":(exclude,glob).coverage.*",
+    ":(exclude,glob)**/__pycache__/**", ":(exclude,glob)**/.pytest_cache/**",
+    ":(exclude,glob)**/htmlcov/**", ":(exclude,glob)**/.claude/**",
+    ":(exclude,glob)**/node_modules/**",
+]
+
+
 def commit_all(work: Path, message: str) -> str:
-    subprocess.run(["git", "add", "-A"], cwd=work, capture_output=True, text=True, check=False)
+    subprocess.run(["git", "add", "-A", "--", ".", *ARTEFACT_EXCLUDES],
+                   cwd=work, capture_output=True, text=True, check=False)
     subprocess.run(["git", "commit", "-m", message, "--allow-empty"],
                    cwd=work, capture_output=True, text=True, check=False)
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=work,

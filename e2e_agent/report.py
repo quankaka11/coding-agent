@@ -85,7 +85,7 @@ def render(run_dir: Path) -> str:
         out.append("")
 
     out += ["---", "", "*Báo cáo sinh từ `events.jsonl`. Mọi kết cục đều có mã lý do; "
-            "danh sách mã và ý nghĩa nằm trong `e2e_agent/reasons.py`.*"]
+            "danh sách mã và ý nghĩa nằm trong `e2e_agent/core/reasons.py`.*"]
     return "\n".join(out) + "\n"
 
 

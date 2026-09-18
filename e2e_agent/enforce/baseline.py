@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -117,6 +118,16 @@ def capture(ctx: RunContext, prof: Profile, repo: Path, scope: list[str] | None 
     return base
 
 
+def coverage_path(ctx: RunContext) -> Path:
+    """Nơi DUY NHẤT coverage.json được ghi và được đọc (G-7, mutation T2).
+
+    Nằm trong run_dir, không nằm trong cây code: file đo nằm trong worktree thì
+    `git add -A` của bước test-first sẽ commit nó vào nhánh MR, và G-3 sẽ bắt
+    chính artefact của hệ thống như một vi phạm của agent.
+    """
+    return ctx.run_dir / COVERAGE_FILE
+
+
 def measure_coverage(ctx: RunContext, prof: Profile, repo: Path) -> float | None:
     """Chạy lệnh coverage của hồ sơ và trả về % toàn repo.
 
@@ -125,10 +136,13 @@ def measure_coverage(ctx: RunContext, prof: Profile, repo: Path) -> float | None
     """
     if not prof.is_available("coverage"):
         return None
-    path = repo / COVERAGE_FILE
+    path = coverage_path(ctx)
     cmd = prof.commands["coverage"].format(coverage_json=str(path),
                                            junit=str(ctx.run_dir / "coverage-junit.xml"))
-    res = ctx.cmd(cmd, cwd=repo, timeout=prof.limit("cmd_timeout_sec"))
+    # coverage.py ghi file dữ liệu `.coverage` vào cwd; đẩy nó sang run_dir luôn
+    # để cây code sạch. Biến này coverage.py đọc chuẩn, pytest-cov cũng tôn trọng.
+    env = {**os.environ, "COVERAGE_FILE": str(ctx.run_dir / ".coverage")}
+    res = ctx.cmd(cmd, cwd=repo, timeout=prof.limit("cmd_timeout_sec"), env=env)
     cov = parsers.coverage_json(path)
     ctx.emit("coverage.measured", total_pct=cov.total_pct if cov else None,
              exit_code=res.exit_code, level="info" if cov else "warn")
