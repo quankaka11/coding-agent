@@ -1,15 +1,18 @@
 # docker compose up -d --build     → giao diện ở http://127.0.0.1:8080, vòng quét tự bật
 #
-# Lần đầu:
-#   mkdir workspace && cp .env.example workspace/.env        # điền token vào ĐÂY (xem dưới)
-#   docker compose run --rm --entrypoint claude e2ea         # đăng nhập Claude một lần (/login), rồi thoát
-#   docker compose up -d --build
+# Hướng dẫn đầy đủ: docs/HUONG-DAN-CAI-DAT.md. Tóm tắt lần đầu:
+#   mkdir workspace && cp .env.example workspace/.env              # điền token GitLab/Backlog vào ĐÂY
+#   docker compose build
+#   docker compose run --rm --entrypoint claude e2ea auth login    # đăng nhập Claude, dán mã từ trình duyệt
+#   docker compose up -d
 #
-# Vì sao token nằm trong workspace/.env chứ không phải biến môi trường: sandbox của agent
-# chặn ĐỌC file đó (và file đăng nhập Claude trong volume home), nhưng trong container nó
-# không gỡ được biến môi trường khỏi Bash của agent. Đặt token vào `environment:` là để
-# agent đọc được bằng `env`. (CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY vẫn dùng được thay
-# cho bước đăng nhập, với đúng cái giá đó.)
+# Token GitLab/Backlog nằm trong workspace/.env, KHÔNG trong biến môi trường: sandbox của
+# agent chặn đọc file đó (và file đăng nhập Claude trong volume home), nhưng trong container
+# nó không gỡ được biến môi trường khỏi Bash của agent.
+#
+# claude.env (tuỳ chọn, cạnh file này): thay cho `claude auth login` bằng một dòng
+#   CLAUDE_CODE_OAUTH_TOKEN=...   (từ `claude setup-token`, hạn 1 năm)  hoặc  ANTHROPIC_API_KEY=...
+# Tiện hơn (không phải đăng nhập lại mỗi 30 ngày) nhưng agent đọc được biến này bằng `env`.
 services:
   e2ea:
     build:
@@ -18,6 +21,9 @@ services:
         EXTRA_APT: ""            # vd "golang-go" cho repo Go
     image: e2ea:latest
     restart: unless-stopped
+    env_file:
+      - path: ./claude.env
+        required: false
     # bubblewrap (sandbox cho lệnh Bash của agent) cần tạo namespace trong container. Nới
     # seccomp/apparmor của CONTAINER để đổi lấy sandbox cho TỪNG lệnh agent chạy — đã thử:
     # thiếu hai dòng này thì sandbox không bật và `e2ea doctor` báo ⚠.

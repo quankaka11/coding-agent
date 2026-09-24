@@ -7,7 +7,7 @@ code, không phải prompt — agent không đọc, không sửa, không tự ch
 Lớp "phán đoán" (Intake / Discovery / Planning / Test-gen / Implement) là skill của
 Claude Code headless, nằm ở `skills/`.
 
-**Bắt đầu nhanh: mục [Đưa sang repo mới](#đưa-sang-repo-mới-một-lệnh) hoặc [Chạy như service](#chạy-như-service). Cách test ba mức (offline → Claude thật → Backlog/GitLab thật): [TESTING.md](TESTING.md).**
+**Cài trên máy khác / máy chủ (Docker, đăng nhập Claude không cần trình duyệt): [docs/HUONG-DAN-CAI-DAT.md](docs/HUONG-DAN-CAI-DAT.md). Bắt đầu nhanh: mục [Đưa sang repo mới](#đưa-sang-repo-mới-một-lệnh) hoặc [Chạy như service](#chạy-như-service). Cách test ba mức (offline → Claude thật → Backlog/GitLab thật): [TESTING.md](TESTING.md).**
 
 ```
 e2e_agent/
@@ -116,7 +116,7 @@ giữ cả giao diện lẫn vòng quét (`serve --watch`):
 
 ```bash
 mkdir workspace && cp .env.example workspace/.env        # điền token vào workspace/.env
-docker compose run --rm --entrypoint claude e2ea         # đăng nhập Claude một lần (/login), lưu ở volume home
+docker compose run --rm --entrypoint claude e2ea auth login   # đăng nhập Claude, dán mã từ trình duyệt; lưu ở volume home
 docker compose up -d --build                             # http://127.0.0.1:8080
 docker compose run --rm e2ea init --dir /work            # tuỳ chọn: sinh hồ sơ từ CLI thay vì giao diện
 ```

@@ -16,6 +16,7 @@ venvs/
 # --- Secret ---
 .env
 .env.*
+claude.env
 !.env.example
 
 # --- Dữ liệu vận hành của agent (mọi thứ dưới --dir) ---

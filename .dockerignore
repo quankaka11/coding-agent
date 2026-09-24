@@ -1,6 +1,7 @@
 .git
 .env
 .env.*
+claude.env
 !.env.example
 .e2ea
 .idea
