@@ -53,25 +53,41 @@ class Watcher:
             while not self._stop and (max_cycles is None or cycle < max_cycles):
                 cycle += 1
                 try:
-                    done = self.orch.scan_once()
+                    # Không đợi run song song xong: vòng sau vẫn nhận ticket mới vào chỗ trống.
+                    done = self.orch.scan_once(wait=False)
                 except Exception as exc:          # một ticket hỏng không được giết vòng lặp
                     self.log.emit("watch.error", level="error", cycle=cycle,
                                   error=f"{type(exc).__name__}: {exc}")
                     done = []
-                for ticket_id, outcome in done:
-                    handled += 1
-                    self.log.emit("watch.handled", cycle=cycle, ticket=ticket_id, outcome=outcome)
-                    self._count(ticket_id, outcome)
+                handled += self._report(cycle, done)
                 if not done:
-                    self.log.emit("watch.idle", level="debug", cycle=cycle)
+                    self.log.emit("watch.idle", level="debug", cycle=cycle,
+                                  running=len(getattr(self.orch, "_inflight", {})))
                 if self._stop or (max_cycles is not None and cycle >= max_cycles):
                     break
                 self._sleep(self.interval)
         finally:
+            # Dừng là dừng SAU khi các run đang chạy xong — giết ngang để lại ticket kẹt.
+            drain = getattr(self.orch, "drain", None)
+            if drain is not None:
+                try:
+                    handled += self._report(cycle, drain())
+                except Exception as exc:
+                    self.log.emit("watch.error", level="error", error=f"{type(exc).__name__}: {exc}")
             lock.release()
             self.log.emit("watch.end", cycles=cycle, handled=handled)
             self.log.close()
         return handled
+
+    def _report(self, cycle: int, done: list[tuple[str, str]]) -> int:
+        for error in getattr(self.orch, "errors", []):
+            self.log.emit("watch.error", level="error", cycle=cycle, error=error)
+        if getattr(self.orch, "errors", None):
+            self.orch.errors.clear()
+        for ticket_id, outcome in done:
+            self.log.emit("watch.handled", cycle=cycle, ticket=ticket_id, outcome=outcome)
+            self._count(ticket_id, outcome)
+        return len(done)
 
     def _count(self, ticket_id: str, outcome: str) -> None:
         """ERROR lặp lại trên cùng một ticket là hỏng thật, không phải trục trặc thoáng qua."""

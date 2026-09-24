@@ -26,14 +26,16 @@ CLOSED_STATUS_ID = 4
 
 class BacklogTracker:
     def __init__(self, space: str, project: str, api_key_env: str = "BACKLOG_API_KEY",
-                 issue_type_id: str | int | None = None, timeout: int = 30) -> None:
+                 issue_type_id: str | int | None = None, timeout: int = 30,
+                 api_key: str | None = None) -> None:
         self.base = space.rstrip("/")
         if not self.base.startswith("http"):
             self.base = f"https://{self.base}"
         self.project = str(project)
         self.issue_type_id = issue_type_id
         self.timeout = timeout
-        self.api_key = read_secret(api_key_env)
+        # `api_key` truyền thẳng: màn hình cấu hình thử khoá chưa lưu vào .env.
+        self.api_key = api_key or read_secret(api_key_env)
         if not self.api_key:
             raise BacklogError(f"thiếu API key: đặt biến môi trường {api_key_env} hoặc dòng "
                                f"{api_key_env.lower()}=… trong .env")
@@ -84,6 +86,19 @@ class BacklogTracker:
         if created:
             self._category_ids(refresh=True)
         return created
+
+    def formatting(self) -> tuple[bool, str]:
+        """Project có hiển thị Markdown không (textFormattingRule).
+
+        Comment của agent (plan, lý do NO_MR, link MR) viết bằng Markdown và mang dấu máy
+        `<!-- e2ea:… -->`. Project để kiểu "backlog" thì người duyệt thấy `##`, `**`, và cả
+        các dấu HTML thô — máy vẫn đọc đúng, nhưng plan gần như không đọc nổi.
+        """
+        rule = str(self.info.get("textFormattingRule") or "?")
+        if rule == "markdown":
+            return True, "project hiển thị Markdown"
+        return False, (f"project đang dùng định dạng '{rule}' — comment plan của agent (Markdown) sẽ hiện "
+                       "thô. Admin project: Project settings → General → Text formatting rule → Markdown")
 
     def whoami(self) -> dict:
         me = self._call("GET", "/users/myself")

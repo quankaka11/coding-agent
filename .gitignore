@@ -22,6 +22,16 @@ venvs/
 repos/
 work/
 runs/
+workspace/
+# Bản cất .env của từng repo (giao diện web) — chứa token, không bao giờ commit.
+.e2ea/
+# Tracker/forge offline và bản cất hồ sơ trước khi "Sinh lại hồ sơ".
+profiles/backlog/
+profiles/*.bak
+# Hồ sơ do `e2ea init/up` sinh cho từng repo — chứa đường dẫn venv của máy chạy, là dữ
+# liệu vận hành chứ không phải code. Chỉ giữ hồ sơ mẫu.
+profiles/*.yaml
+!profiles/example.yaml
 
 # --- Artefact test/coverage nếu chạy tay ngoài runs/ ---
 .coverage
@@ -33,11 +43,12 @@ htmlcov/
 # --- IDE / tool cục bộ ---
 .idea/
 .vscode/
-.claude/settings.local.json
+# Cấu hình Claude Code cá nhân (plugin, quyền) của người đang làm trên repo này.
+.claude/
 *.log
 .DS_Store
 
-# --- Chưa đưa vào git (xem README: docs/, tests/ và references/ được link tới) ---
-docs/
-tests/
-references/
+
+# --- Giao diện web ---
+ui/node_modules/
+ui/tsconfig.tsbuildinfo

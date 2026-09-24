@@ -40,6 +40,7 @@ def cmd_doctor(args) -> int:
     prof = profile_mod.load(args.profile)
     repo = Path(args.repo).resolve()
     rows = profile_mod.doctor(prof, repo, PACKAGE_ROOT)
+    rows += profile_mod.tracker_rows(prof, Path(args.profile).resolve().parent)
     missing = gate_mod.assert_all_declared(prof)
     width = max(len(r[0]) for r in rows)
     failed = 0
@@ -167,7 +168,7 @@ _ENV_HELP = """Cần trong .env (tại thư mục đang chạy) hoặc biến m�
 
 
 def _layout(args) -> dict:
-    """Mọi thứ nằm dưới --dir: repos/<tên>, profiles/<tên>.yaml, runs/, work/<tên>."""
+    """Mọi thứ nằm dưới --dir: repos/<tên>, profiles/<tên>.yaml, runs/<tên>, work/<tên>."""
     from .config import autoprofile
     from .core.secrets import read_secret
 
@@ -193,9 +194,11 @@ def _layout(args) -> dict:
                    "project": read_secret("backlog_project"), "api_key_env": "backlog_api_key"}
     notify = ({"kind": "webhook", "url_env": "google_chat_webhook"}
               if read_secret("google_chat_webhook") else None)
+    # `runs/<tên repo>/` chứ không phải `runs/` chung: đổi repo trong cùng thư mục
+    # làm việc mà trộn run lại thì mọi tỉ lệ trong `e2ea metrics` đều sai.
     return {"root": root, "url": url, "name": name, "repo": root / "repos" / name,
             "profile": root / "profiles" / f"{name}.yaml", "forge": forge, "tracker": tracker,
-            "notify": notify, "runs": root / "runs", "work": root / "work" / name,
+            "notify": notify, "runs": root / "runs" / name, "work": root / "work" / name,
             "venv": root / "venvs" / name}
 
 
@@ -207,6 +210,10 @@ def _prepare_env(args, lay: dict) -> tuple[str, list[str]]:
     """
     from .config import autoprofile
     if args.no_venv:
+        return "python3", []
+    if (lay["repo"] / ".git").exists() and not autoprofile.is_python_repo(lay["repo"]):
+        # Ngôn ngữ khác không dùng venv chung: dependency cài trong từng worktree bằng
+        # `commands.setup` do agent đề xuất lúc sinh hồ sơ.
         return "python3", []
     print(f"== môi trường test: {lay['venv']}")
     python, notes, todos = autoprofile.ensure_venv(lay["repo"], lay["venv"])
@@ -250,7 +257,8 @@ def cmd_init(args) -> int:
         return 1 if _prepare_env(args, lay)[1] else 0
     python, env_todos = _prepare_env(args, lay)
     draft = autoprofile.generate(lay["repo"], lay["name"], tracker=lay["tracker"],
-                                 forge=lay["forge"], notify=lay["notify"], python=python)
+                                 forge=lay["forge"], notify=lay["notify"], python=python,
+                                 suggest=_suggester(lay))
     draft.todos = env_todos + draft.todos
     lay["profile"].parent.mkdir(parents=True, exist_ok=True)
     lay["profile"].write_text(draft.dumps(), encoding="utf-8")
@@ -260,6 +268,33 @@ def cmd_init(args) -> int:
     for t in draft.todos:
         print(f"  TODO: {t}")
     return 1 if draft.todos else 0
+
+
+def _suggester(lay: dict):
+    """Hàm cho autoprofile gọi khi repo không phải Python: agent soi repo, đề xuất lệnh."""
+    from .config import agentprofile
+
+    def suggest(repo: Path):
+        agent = agent_mod.make_default()
+        if not agent.available():
+            return None, f"không thấy lệnh {agent.binary!r} (claude) để soi repo"
+        print("== repo không phải Python — agent đang soi repo để đề xuất lệnh setup/test/lint (vài phút)")
+        return agentprofile.suggest(repo, agent, agentprofile.run_dir_for(lay["runs"]))
+    return suggest
+
+
+def cmd_clean(args) -> int:
+    """Dọn worktree của các run cũ (và nhánh local agent/* nếu --branches)."""
+    from .pipeline import sandbox
+    lay = _layout(args)
+    removed = sandbox.prune(lay["repo"], lay["work"], args.days, branches=args.branches,
+                            dry_run=args.dry_run)
+    verb = "sẽ xoá" if args.dry_run else "đã xoá"
+    print(f"{verb} {len(removed)} mục" + ("" if removed else " — không có gì cũ hơn "
+                                            f"{args.days:g} ngày"))
+    for item in removed:
+        print(f"  {item}")
+    return 0
 
 
 def cmd_up(args) -> int:
@@ -289,6 +324,22 @@ def cmd_up(args) -> int:
         return cmd_scan(args)
     print(f"== watch mỗi {args.interval}s — Ctrl-C để dừng. Tạo ticket với category `{L.TRY}`.")
     return cmd_watch(args)
+
+
+def cmd_serve(args) -> int:
+    """Giao diện web trên thư mục làm việc. Chỉ nghe localhost nếu không bảo khác."""
+    try:
+        from .web.app import serve
+    except ImportError:
+        print("thiếu fastapi/uvicorn — cài bằng: pip install -e \".[web]\"", file=sys.stderr)
+        return 2
+    root = Path(args.dir).resolve()
+    # `read_secret` còn một đường đọc `.env` theo thư mục đang đứng. Không đứng
+    # đúng chỗ thì `serve --dir X` lấy khoá của thư mục gọi lệnh — sai lặng lẽ,
+    # và sai về bí mật.
+    os.chdir(root)
+    return serve(root, host=args.host, port=args.port,
+                 watch_interval=args.interval if args.watch else None)
 
 
 def _orchestrator(args, prof, repo):
@@ -351,7 +402,7 @@ def cmd_phase_b(args) -> int:
 def cmd_approve(args) -> int:
     prof = profile_mod.load(args.profile)
     orch, tracker = _orchestrator(args, prof, Path(args.repo).resolve())
-    print(orch.promote(tracker.get(args.ticket)))
+    print(orch.approve(tracker.get(args.ticket)))
     return 0
 
 
@@ -408,12 +459,32 @@ def cmd_report(args) -> int:
     return 0
 
 
+def _read_runs_root(value: str | None) -> Path:
+    """`--runs-root` không đặt thì đoán như người đứng trong thư mục làm việc.
+
+    `up`/`serve` ghi run vào `runs/<tên repo>/`; mặc định `runs/` thì `metrics`
+    gõ ngay tại đó ra 0 run mà không báo gì. Thư mục đó chưa có (còn layout cũ,
+    hoặc không phải thư mục làm việc) thì vẫn là `runs/` như trước.
+    """
+    if value:
+        return Path(value)
+    if Path(".env").is_file():
+        from types import SimpleNamespace
+        try:
+            runs = _layout(SimpleNamespace(dir="."))["runs"]
+        except (ProfileError, ValueError):     # .env dở dang: không đoán nữa
+            runs = None
+        if runs is not None and runs.is_dir():
+            return runs
+    return RUNS_DIR
+
+
 def cmd_label(args) -> int:
     """Reviewer gán nhãn kết quả — đây là dữ liệu đo pilot, không chỉ để merge."""
-    run_dir = Path(args.run_dir) if args.run_dir else metrics_mod.latest_run(
-        Path(args.runs_root), args.task_id)
+    runs_root = _read_runs_root(args.runs_root)
+    run_dir = Path(args.run_dir) if args.run_dir else metrics_mod.latest_run(runs_root, args.task_id)
     if run_dir is None:
-        print(f"không thấy run nào của ticket {args.task_id} trong {args.runs_root}", file=sys.stderr)
+        print(f"không thấy run nào của ticket {args.task_id} trong {runs_root}", file=sys.stderr)
         return 2
     try:
         path = metrics_mod.save_review(run_dir, metrics_mod.Review(
@@ -427,7 +498,7 @@ def cmd_label(args) -> int:
 
 
 def cmd_metrics(args) -> int:
-    roll = metrics_mod.collect(Path(args.runs_root))
+    roll = metrics_mod.collect(_read_runs_root(args.runs_root))
     if args.json:
         print(json.dumps(dataclasses.asdict(roll), ensure_ascii=False, indent=2))
     else:
@@ -502,6 +573,20 @@ def build_parser() -> argparse.ArgumentParser:
     up.add_argument("--max-cycles", type=int, default=None)
     up.add_argument("--once", action="store_true", help="quét một vòng rồi thoát thay vì watch")
     up.set_defaults(func=cmd_up)
+    sv = _onboard("serve", "giao diện web: cấu hình, duyệt plan, xem run")
+    sv.add_argument("--port", type=int, default=8080)
+    sv.add_argument("--host", default="127.0.0.1",
+                    help="mặc định chỉ localhost — thư mục làm việc chứa token")
+    sv.add_argument("--watch", action="store_true",
+                    help="bật luôn vòng quét khi khởi động (Docker/systemd)")
+    sv.add_argument("--interval", type=int, default=60, help="giây giữa hai vòng quét (với --watch)")
+    sv.set_defaults(func=cmd_serve)
+    cl = _onboard("clean", "dọn worktree của các run cũ (run ra MR đã tự dọn)")
+    cl.add_argument("--days", type=float, default=7, help="chỉ dọn thứ cũ hơn N ngày (mặc định 7)")
+    cl.add_argument("--branches", action="store_true",
+                    help="xoá cả nhánh local agent/* không còn worktree (chỉ khi forge là GitLab)")
+    cl.add_argument("--dry-run", action="store_true", help="chỉ liệt kê, không xoá")
+    cl.set_defaults(func=cmd_clean)
 
     d = sub.add_parser("doctor", help="soát hồ sơ repo với repo thật")
     d.add_argument("--profile", required=True)
@@ -518,7 +603,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--baseline", help="đường dẫn baseline.json")
     g.set_defaults(func=cmd_gate)
 
-    a = sub.add_parser("antigaming", help="chạy G-1..G-8")
+    a = sub.add_parser("antigaming", help="chạy G-1..G-11")
     _common(a)
     a.add_argument("--baseline")
     a.add_argument("--base-sha")
@@ -571,10 +656,10 @@ def build_parser() -> argparse.ArgumentParser:
     pa = _life("phase-a", "chạy Intake/Discovery/Planning cho một ticket")
     pa.add_argument("--ticket", required=True)
     pa.set_defaults(func=cmd_phase_a)
-    pb = _life("phase-b", "chạy Baseline→MR cho một ticket chi tiết")
+    pb = _life("phase-b", "chạy Baseline→MR cho một ticket đã có plan")
     pb.add_argument("--ticket", required=True)
     pb.set_defaults(func=cmd_phase_b)
-    ap_ = _life("approve", "duyệt plan → tạo ticket chi tiết")
+    ap_ = _life("approve", "duyệt plan → vòng quét sau viết code và mở MR")
     ap_.add_argument("--ticket", required=True)
     ap_.set_defaults(func=cmd_approve)
     rj = _life("reject", "từ chối plan kèm lý do")
@@ -590,7 +675,8 @@ def build_parser() -> argparse.ArgumentParser:
     lb = sub.add_parser("label", help="reviewer gán nhãn kết quả cho một run")
     lb.add_argument("--task-id", required=True)
     lb.add_argument("--run-dir", help="mặc định lấy run mới nhất của ticket")
-    lb.add_argument("--runs-root", default=str(RUNS_DIR))
+    lb.add_argument("--runs-root", default=None,
+                    help="mặc định runs/<repo trong .env>/ nếu có, không thì runs/")
     lb.add_argument("--outcome", required=True, choices=sorted(metrics_mod.OUTCOMES))
     lb.add_argument("--test-value", required=True, choices=sorted(metrics_mod.TEST_VALUES))
     lb.add_argument("--note", required=True, help="một câu vì sao")
@@ -598,7 +684,8 @@ def build_parser() -> argparse.ArgumentParser:
     lb.set_defaults(func=cmd_label)
 
     mt = sub.add_parser("metrics", help="rollup metric từ events.jsonl và review.json")
-    mt.add_argument("--runs-root", default=str(RUNS_DIR))
+    mt.add_argument("--runs-root", default=None,
+                    help="mặc định runs/<repo trong .env>/ nếu có, không thì runs/")
     mt.add_argument("--json", action="store_true")
     mt.set_defaults(func=cmd_metrics)
 

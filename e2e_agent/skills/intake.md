@@ -28,8 +28,9 @@ duy nhất của pipeline là plan, người sẽ đọc plan và gật hoặc b
 - `T1` sửa lỗi / đổi hành vi có kết quả đúng xác định
 - `T2` thêm test cho vùng chưa có coverage (code coi là đúng)
 - `T3` tính năng mới gọn trong một module, spec rõ
-- `T4` không kiểm chứng được bằng test tất định (output LLM, đổi prompt…) — kết quả hợp
-  lệ, đừng cố nhận bừa
+- `T4` không kiểm chứng được bằng test tất định (output LLM, đổi prompt, UI/giao diện,
+  cấu hình, tài liệu…) — kết quả hợp lệ, đừng cố nhận bừa. Tuỳ chế độ của repo, hệ thống
+  hoặc dừng, hoặc vẫn làm và mở MR dạng Draft để người kiểm tay.
 
 ## Đầu ra — một khối ```yaml duy nhất, không kèm giải thích
 

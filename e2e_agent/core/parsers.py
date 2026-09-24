@@ -1,6 +1,6 @@
 """Đọc kết quả test/coverage ở định dạng chuẩn, không phụ thuộc ngôn ngữ.
 
-JUnit XML: pytest, jest, go-junit-report, maven… đều xuất được.
+JUnit XML: pytest, jest, vitest, gotestsum, maven, gradle, phpunit… đều xuất được.
 coverage.json: định dạng của coverage.py.
 """
 from __future__ import annotations
@@ -29,11 +29,39 @@ class TestReport:
         return self.total - len(self.failed) - len(self.skipped)
 
 
+def reset(path: Path) -> None:
+    """Xoá kết quả junit cũ trước khi chạy lại lệnh test.
+
+    Cùng một đường dẫn được dùng nhiều lần trong một run (gate, test-first). Lệnh test
+    chết trước khi ghi file thì lần đọc sau vớ phải kết quả của lần TRƯỚC — gate xanh
+    trên một lần chạy không hề diễn ra.
+    """
+    import shutil
+    if path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        path.unlink(missing_ok=True)
+
+
 def junit(path: Path) -> TestReport:
+    """Đọc JUnit XML. `path` là một file, hoặc một THƯ MỤC chứa nhiều file XML.
+
+    Thư mục là cách chung cho các tool ghi mỗi suite một file (maven surefire, gradle,
+    phpunit theo suite): lệnh test chỉ cần `mkdir -p {junit} && cp .../*.xml {junit}/`.
+    File hỏng không làm đổ run — nó được bỏ qua như không có.
+    """
     rep = TestReport()
-    if not path.is_file():
-        return rep
-    root = ET.parse(path).getroot()
+    files = sorted(path.rglob("*.xml")) if path.is_dir() else [path] if path.is_file() else []
+    for one in files:
+        try:
+            root = ET.parse(one).getroot()
+        except (ET.ParseError, OSError):
+            continue
+        _read_cases(root, rep)
+    return rep
+
+
+def _read_cases(root, rep: TestReport) -> None:
     for case in root.iter("testcase"):
         name = case.get("name", "?")
         classname = case.get("classname", "")
@@ -48,7 +76,6 @@ def junit(path: Path) -> TestReport:
                 rep.errored.append(test_id)
         elif case.find("skipped") is not None:
             rep.skipped.append(test_id)
-    return rep
 
 
 @dataclass

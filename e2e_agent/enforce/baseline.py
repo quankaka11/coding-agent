@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -10,6 +9,7 @@ from ..core import gitutil, parsers
 from ..config.profile import COVERAGE_FILE, Profile
 from ..core.reasons import Kind, Reason
 from ..core.run import RunContext
+from ..core.secrets import command_env
 
 
 @dataclass
@@ -75,6 +75,7 @@ def capture(ctx: RunContext, prof: Profile, repo: Path, scope: list[str] | None 
     runner_broken = True
     for attempt in range(base.runs):
         junit_path = ctx.run_dir / f"baseline-junit-{attempt}.xml"
+        parsers.reset(junit_path)
         status, _ = _run_check(ctx, prof, repo, "test", junit=str(junit_path))
         report = parsers.junit(junit_path)
         if not (status == "fail" and report.total == 0):
@@ -159,7 +160,7 @@ def measure_coverage(ctx: RunContext, prof: Profile, repo: Path) -> float | None
                                            junit=str(ctx.run_dir / "coverage-junit.xml"))
     # coverage.py ghi file dữ liệu `.coverage` vào cwd; đẩy nó sang run_dir luôn
     # để cây code sạch. Biến này coverage.py đọc chuẩn, pytest-cov cũng tôn trọng.
-    env = {**os.environ, "COVERAGE_FILE": str(ctx.run_dir / ".coverage")}
+    env = command_env({"COVERAGE_FILE": str(ctx.run_dir / ".coverage")})
     res = ctx.cmd(cmd, cwd=repo, timeout=prof.limit("cmd_timeout_sec"), env=env)
     cov = parsers.coverage_json(path)
     ctx.emit("coverage.measured", total_pct=cov.total_pct if cov else None,

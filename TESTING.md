@@ -67,10 +67,10 @@ terminal `up` in `watch.handled … outcome=OK` và ticket sang `agent:plan-read
 **6. Đọc plan** trong comment trên ticket (Google Chat cũng báo). Kiểm nhanh trong
 `~/agent/runs/<KEY>/<run>/`: `spec.yaml` là T1 với 3 AC, `plan.md` có mục "Test sẽ viết".
 
-**7. Duyệt**: đổi category sang **`agent:plan-approved`**. Vòng sau: ticket con `[impl] …`
-xuất hiện và Phase B chạy luôn, 5–10 phút.
+**7. Duyệt**: đổi category sang **`agent:plan-approved`**. Vòng sau Phase B chạy ngay trên
+ticket đó, 5–10 phút.
 
-**8. Kết quả**: ticket con và ticket gốc cùng `agent:mr-created`, Chat gửi link MR. Trên
+**8. Kết quả**: ticket sang `agent:mr-created`, có comment link MR, Chat gửi link MR. Trên
 GitLab, MR có label `agent-generated`, hai commit `test:` rồi `fix:`, diff chỉ đụng
 `src/pricing.py` và thêm `tests/test_pricing_*.py`. So với đáp án cuối file.
 
@@ -89,17 +89,21 @@ python3 scripts/e2e_offline.py
 ```
 
 Script dựng repo giả có bug, một `origin` giả, agent giả (StubAgent), tracker và forge
-trên đĩa, rồi chạy trọn: `agent:try` → plan → duyệt → ticket con → Phase B → MR.
-Kết thúc phải in `TẤT CẢ ĐẠT`. Nó kiểm luôn 8 điểm dễ hỏng:
+trên đĩa, rồi chạy trọn: `agent:try` → plan → duyệt → Phase B → MR, tất cả trên một ticket.
+Kết thúc phải in `TẤT CẢ ĐẠT`. Nó kiểm 15 điểm dễ hỏng, trong đó:
 
 - base lấy từ `origin`, không phải HEAD local đã lạc hậu
 - `coverage.json`, `.coverage`, `__pycache__` không lọt vào commit của agent
-- ticket kẹt `agent:running` được giao cho người; cặp gốc/con đang chờ thì không đụng
+- ticket kẹt `agent:running` được giao cho người; cặp gốc/con của phiên bản cũ đang chờ thì không đụng
 - origin đổi file trong scope sau khi duyệt → `NO_MR/plan_stale`, ticket gốc tự về `agent:try`, plan lại, duyệt lại → MR
 - lượt test_gen đầu viết test pass sẵn trên code cũ → agent viết lại → MR
 - lượt implement đầu đụng file ngoài `scope.modules` → G-10 fail → agent tự sửa → vẫn ra MR
 - lint đỏ sẵn trên `main` → agent sửa bằng commit `chore:` riêng, rồi `test:` → `fix:`
-- đặt lại `agent:plan-approved` không đẻ ticket con thứ hai
+- đặt lại `agent:plan-approved` trên plan đã ra MR không mở MR thứ hai
+- relaxed + T4 → Draft MR; strict + T4 → `NO_MR/t4`; test pass sẵn sau mọi lượt → Draft MR
+- `auto_approve: [T1]` + `max_parallel: 2` → hai ticket chạy song song, tự duyệt, cùng ra MR
+- agent thêm `requirements.txt` → G-11 cần review, G-3 không bắt oan
+- gate xanh mà agent không đổi code → `NO_MR/no_change`
 
 Hiện trường nằm ở `work/e2e-offline/` (backlog, runs, repo, worktree) để xem lại.
 
@@ -149,21 +153,21 @@ Cần thấy: `runs/T-001/<run>/spec.yaml`, `discovery.md`, `plan.md`; worktree 
 **Duyệt và Phase B.** Đổi label bằng CLI hoặc sửa tay file YAML của ticket:
 
 ```bash
-e2ea approve --profile /tmp/p.yaml --repo /tmp/target --ticket T-001   # tạo T-002 agent:impl
-e2ea scan    --profile /tmp/p.yaml --repo /tmp/target                  # Phase B trên T-002
+e2ea approve --profile /tmp/p.yaml --repo /tmp/target --ticket T-001   # T-001 → agent:plan-approved
+e2ea scan    --profile /tmp/p.yaml --repo /tmp/target                  # Phase B trên T-001
 ```
 
 Cần thấy:
 
 - `backlog/mrs/mr-001.md` có bảng gate, bảng anti-gaming, payload `e2ea:task` cuối file
-- nhánh `agent/T-002-xxxx` trong `/tmp/target` với hai commit: `test:` rồi `fix:`
-- T-001 và T-002 cùng ở `agent:mr-created`
-- `runs/T-002/<run>/evidence.json` có `fail_before_pass_after` và `test_freeze`
+- nhánh `agent/T-001-xxxx` trong `/tmp/target` với hai commit: `test:` rồi `fix:`
+- T-001 ở `agent:mr-created`, có comment link MR
+- `runs/T-001/<run>/evidence.json` có `fail_before_pass_after` và `test_freeze`
 
 **Cố tình cho fail** để chắc gate bắt được:
 
 - Ticket mơ hồ, không có tiêu chí → `NO_MR/not_ready`
-- Ticket kiểu "đổi prompt cho hay hơn" → `NO_MR/t4`
+- Ticket kiểu "đổi prompt cho hay hơn" → `NO_MR/t4` (chế độ strict); relaxed → Draft MR
 - Sau khi approve, sửa file trong scope trên `origin` rồi mới `scan` → `NO_MR/plan_stale` và ticket gốc về `agent:try`
 - Từ chối plan hai lần bằng `e2ea reject --why ...` → lần ba `NO_MR/plan_rejected`
 
@@ -173,9 +177,9 @@ Cần thấy:
 e2ea watch --profile /tmp/p.yaml --repo /tmp/target --interval 15
 ```
 
-Kiểm ticket kẹt: đang chạy Phase B thì `kill -9` tiến trình watch. Ticket con nằm ở
+Kiểm ticket kẹt: đang chạy Phase B thì `kill -9` tiến trình watch. Ticket nằm ở
 `agent:running`. Đặt `limits.running_stale_min: 1` trong hồ sơ, chạy lại `watch`: sau
-một phút ticket con và ticket gốc phải sang `agent:needs-human`, kèm comment chỉ đúng
+một phút ticket phải sang `agent:needs-human`, kèm comment chỉ đúng
 `runs/<ticket>/<run_id>` để xem.
 
 ## Mức 3 — Backlog + GitLab thật
@@ -205,9 +209,9 @@ Kiểm từng mốc:
 
 1. Ticket sang `agent:running`, có comment `Agent bắt đầu xử lý (run r-…)`.
 2. Sang `agent:plan-ready`, comment plan có phần `Duyệt / Từ chối`, Google Chat nhận thông báo.
-3. Đổi category `agent:plan-approved` trên Backlog. Vòng sau: ticket con `[impl] …` xuất hiện
-   với category `agent:impl`, ticket gốc về `agent:running`.
-4. Ticket con sang `agent:mr-created`, ticket gốc cũng vậy, Chat nhận link MR.
+3. Đổi category `agent:plan-approved` trên Backlog. Vòng sau: ticket về `agent:running`,
+   Phase B chạy ngay trên ticket đó.
+4. Ticket sang `agent:mr-created`, có comment link MR, Chat nhận link MR.
 5. Trên GitLab: MR có label `agent-generated`, nhánh `agent/<KEY>-xxxx`, mô tả có
    payload ẩn `e2ea:task` (xem ở chế độ raw).
 
@@ -350,14 +354,13 @@ comment plan lần 2 nằm dưới comment `Plan bị từ chối (lần 1/2)`. 
 e2ea approve --profile p.yaml --repo /path/clone --ticket <KEY>     # hoặc đổi category
 ```
 
-Phải thấy ticket con `[impl] order_total bỏ qua quantity` ở `agent:impl`, body có khối
-```yaml spec và mục "Plan đã duyệt", ticket gốc về `agent:running`.
+Ticket sang `agent:plan-approved`; vòng quét sau chạy Phase B ngay trên ticket đó.
 
 ### Bước 4 — Phase B, chờ ~5–10 phút
 
 ```bash
 e2ea scan --profile p.yaml --repo /path/clone
-e2ea report --run-dir runs/<KEY-con>/<run>
+e2ea report --run-dir runs/<KEY>/<run>
 ```
 
 Chấm theo `events.jsonl`, theo thứ tự thời gian:
@@ -375,12 +378,12 @@ Chấm theo `events.jsonl`, theo thứ tự thời gian:
 
 Trên MR (GitLab hoặc `backlog/mrs/`):
 
-- đúng 2 commit trên nhánh `agent/<KEY-con>-xxxx`: `test: …` rồi `fix: …`
+- đúng 2 commit trên nhánh `agent/<KEY>-xxxx`: `test: …` rồi `fix: …`
 - diff `src/pricing.py` chỉ đổi dòng tính `subtotal`; nếu agent sửa cả `apply_discount`
   (bug mồi) thì ghi nhận là **vượt đề**, gán nhãn `rejected-unsafe` ở bước 5
 - diff `tests/` chỉ thêm test mới, không đụng 2 test cũ
 - không có `coverage.json`, `.coverage`, `__pycache__` trong diff
-- cả ticket con và ticket gốc ở `agent:mr-created`
+- ticket ở `agent:mr-created`, có comment link MR
 
 ### Bước 5 — CI đối chứng và gán nhãn
 
@@ -391,7 +394,7 @@ trên nhánh MR sửa `assert ... == 150.0` thành `assert True`, push. Job ph�
 Cuối cùng gán nhãn cho pilot:
 
 ```bash
-e2ea label --task-id <KEY-con> --outcome merged-as-is --test-value real \
+e2ea label --task-id <KEY> --outcome merged-as-is --test-value real \
   --note "sửa đúng một dòng, test có giá trị thật"
 e2ea metrics
 ```

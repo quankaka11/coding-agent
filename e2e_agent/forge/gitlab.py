@@ -9,7 +9,7 @@ import urllib.request
 from pathlib import Path
 
 from ..core.secrets import read_secret, scrub
-from .base import MergeRequest
+from .base import DRAFT_PREFIX, MergeRequest
 
 
 class GitLabError(RuntimeError):
@@ -63,7 +63,9 @@ class GitLabForge:
             raise GitLabError(f"push nhánh {branch} thất bại: {scrub(proc.stderr, self.token)}")
 
     def create_mr(self, source_branch: str, target_branch: str, title: str,
-                  body: str, labels: list[str]) -> MergeRequest:
+                  body: str, labels: list[str], draft: bool = False) -> MergeRequest:
+        if draft and not title.startswith(DRAFT_PREFIX):
+            title = DRAFT_PREFIX + title
         raw = self._call("POST", "/merge_requests", {
             "source_branch": source_branch, "target_branch": target_branch,
             "title": title, "description": body, "labels": ",".join(labels),

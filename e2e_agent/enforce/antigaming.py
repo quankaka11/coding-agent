@@ -1,4 +1,4 @@
-"""Anti-gaming G-1..G-10.
+"""Anti-gaming G-1..G-11.
 
 Luật ở đây chấm chính agent vừa chạy, nên tuyệt đối không được nằm trong prompt
 (nguyên tắc R-6). Mỗi luật trả về pass / fail / needs_review / out_of_scope KÈM
@@ -82,6 +82,9 @@ class Context:
     def changed_source_files(self) -> list[str]:
         return [f for f in self.changed if not self.is_test_file(f)]
 
+    def is_dependency_file(self, path: str) -> bool:
+        return matches(path, self.prof.dependency_files) is not None
+
 
 # -- từng luật -------------------------------------------------------------
 
@@ -121,7 +124,10 @@ def g3_forbidden_paths(c: Context) -> RuleResult:
             if (pat := matches(f, c.prof.forbidden_paths))]
     outside = []
     if c.prof.allowed_paths:
-        outside = [f for f in c.changed if not matches(f, c.prof.allowed_paths)]
+        # File dependency nằm ngoài allowed_paths là chuyện của G-11, không phải G-3:
+        # sửa package.json ở gốc repo không phải "đi lạc", mà là một quyết định cần review.
+        outside = [f for f in c.changed if not matches(f, c.prof.allowed_paths)
+                   and not c.is_dependency_file(f)]
     bad = bool(hits) or bool(outside)
     return RuleResult("G-3", FAIL if bad else PASS,
                       "đụng file cấm hoặc ra ngoài allowed_paths" if bad else "chỉ đụng vùng được phép",
@@ -139,6 +145,13 @@ def g4_fail_before_pass_after(c: Context) -> RuleResult:
     need_mutation = c.task_type in ("T2", "T3")
     ev = c.evidence.get("fail_before_pass_after")
     mut = c.evidence.get("mutation") or {}
+
+    # relaxed: Phase B đã cố ý đi tiếp mà không có bằng chứng (T4, test không viết
+    # được, test pass sẵn) và ghi lý do. Không phải gian lận → không chặn, nhưng MR là
+    # Draft và người review phải thấy dòng này.
+    if no_proof := c.evidence.get("no_proof"):
+        return RuleResult("G-4", NEEDS_REVIEW, f"không có bằng chứng fail-trước: {no_proof}",
+                          {"no_proof": no_proof, **(ev or {})})
 
     if c.task_type == "T2":
         # T2 viết test cho code đã đúng nên không có "fail trước" — mutation là lưới duy nhất.
@@ -266,6 +279,12 @@ def g8_ac_markers(c: Context) -> RuleResult:
     marker = c.prof.conventions.get("ac_marker", "pytest.mark.ac")
     seen: set[str] = set()
     for rel in c.changed_test_files():
+        if not rel.endswith(".py"):
+            # Ngôn ngữ khác: không có AST, quy ước là mã AC nằm trong tên test hoặc
+            # comment ngay trong file test (`it("AC-1: ...")`, `// AC-1`).
+            text = astcheck.read(c.repo / rel) or ""
+            seen |= {ac for ac in c.acceptance_ids if ac in text}
+            continue
         tree = astcheck.parse(astcheck.read(c.repo / rel))
         if tree is not None:
             for func in astcheck.test_functions(tree):
@@ -321,7 +340,7 @@ def g10_plan_scope(c: Context) -> RuleResult:
         return RuleResult("G-10", SKIP, "spec không khai scope.modules")
     allowed = [m.rstrip("/") for m in c.modules]
     outside = [f for f in c.changed
-               if not c.is_test_file(f)
+               if not c.is_test_file(f) and not c.is_dependency_file(f)
                and not any(f == m or f.startswith(m + "/") for m in allowed)]
     return RuleResult("G-10", FAIL if outside else PASS,
                       f"đụng {len(outside)} file ngoài phạm vi plan" if outside
@@ -330,11 +349,33 @@ def g10_plan_scope(c: Context) -> RuleResult:
                       remedy=IMPLEMENT if outside else None)
 
 
+def g11_dependencies(c: Context) -> RuleResult:
+    """Đổi file dependency (package.json, pyproject.toml, go.mod…).
+
+    Thêm thư viện là việc thường gặp của ticket thật, cấm hẳn là đẩy cả loại ticket đó
+    về NO_MR. Nhưng một dependency mới là quyết định kiến trúc/bảo mật, nên relaxed để
+    đi tiếp và bắt người review MR nhìn vào; strict thì hoàn nguyên.
+    """
+    deps = [f for f in c.changed if c.is_dependency_file(f)]
+    if not deps:
+        return RuleResult("G-11", PASS, "không đổi file dependency")
+    if c.prof.relaxed:
+        return RuleResult("G-11", NEEDS_REVIEW, f"đổi {len(deps)} file dependency — xem kỹ thư viện thêm/bớt",
+                          {"files": deps[:10]})
+    return RuleResult("G-11", FAIL, f"đổi {len(deps)} file dependency (chế độ strict không cho phép)",
+                      {"files": deps[:10]}, remedy=IMPLEMENT)
+
+
 RULES: list[Callable[[Context], RuleResult]] = [
     g1_test_count, g2_no_skip, g3_forbidden_paths, g4_fail_before_pass_after,
     g5_same_sha, g6_real_asserts, g7_coverage, g8_ac_markers, g9_test_freeze,
-    g10_plan_scope,
+    g10_plan_scope, g11_dependencies,
 ]
+
+#: relaxed: luật đo chất lượng (không phải luật an toàn) — hết vòng tự sửa mà vẫn fail
+#: thì hạ xuống needs_review và MR thành Draft, thay vì NO_MR. G-1/G-2/G-3/G-9 (xoá
+#: test, tắt test, ra ngoài vùng, sửa test đã đóng băng) KHÔNG bao giờ được hạ.
+SOFT_RULES = frozenset({"G-4", "G-7", "G-10"})
 
 #: Luật tĩnh soi được ngay sau bước viết test, TRƯỚC khi đóng băng: cho agent viết
 #: test cơ hội tự sửa (skip marker, file ngoài vùng, assert rỗng, thiếu marker AC)
@@ -362,6 +403,25 @@ def summarize(results: list[RuleResult]) -> dict:
         "needs_review": review,
         "rules": {r.rule: asdict(r) for r in results},
     }
+
+
+def soften(report: dict, rules: frozenset[str] = SOFT_RULES) -> list[str]:
+    """Hạ các luật mềm đang fail xuống needs_review, tính lại phán quyết. Trả về luật đã hạ.
+
+    Chỉ hạ luật có remedy (agent sửa được mà chưa sửa xong); fail không remedy là bằng
+    chứng hỏng và vẫn phải chặn.
+    """
+    softened = [rule for rule, data in report["rules"].items()
+                if rule in rules and data["status"] == FAIL and data.get("remedy")]
+    for rule in softened:
+        data = report["rules"][rule]
+        data["status"] = NEEDS_REVIEW
+        data["why"] = f"{data['why']} (relaxed: hết vòng tự sửa, hạ xuống cần review)"
+    if softened:
+        results = [RuleResult(**data) for data in report["rules"].values()]
+        report.update(summarize(results))
+        report["softened"] = softened
+    return softened
 
 
 def run(ctx: RunContext, prof: Profile, repo: Path, base_sha: str,
@@ -424,12 +484,14 @@ _HOWTO = {
     "G-6": "Mỗi test phải có assert về GIÁ TRỊ (không chỉ assert_called). Không mock chính "
            "module/hàm mà task này đang kiểm.",
     "G-7": "Dòng code mới chưa được test nào chạy qua: viết thêm test đi qua các dòng liệt kê dưới đây.",
-    "G-8": "Gắn marker acceptance criteria cho test tương ứng (vd `@pytest.mark.ac('AC-1')`), "
-           "mỗi AC ít nhất một test.",
+    "G-8": "Gắn mã acceptance criteria cho test tương ứng — Python: `@pytest.mark.ac('AC-1')`; "
+           "ngôn ngữ khác: ghi `AC-1` trong tên test hoặc comment ngay trên test. Mỗi AC ít nhất một test.",
     "G-9": "File test đã được hệ thống khôi phục về bản đóng băng. KHÔNG sửa file test; sửa code "
            "nguồn cho test THẬT xanh.",
     "G-10": "Hoàn nguyên các file ngoài phạm vi plan đã duyệt (scope.modules). Nếu không thể giải "
             "trong phạm vi đó, nói thẳng ra thay vì mở rộng phạm vi.",
+    "G-11": "Hoàn nguyên các file dependency (chế độ strict không cho thêm/bớt thư viện). "
+            "Giải bằng thư viện sẵn có, hoặc nói thẳng là cần thư viện mới.",
 }
 
 

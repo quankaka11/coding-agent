@@ -6,11 +6,14 @@ và để selftest chạy được ở mọi nơi.
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 import yaml
 
 from .base import STATE_LABELS, Ticket, meta
+
+_CREATE_LOCK = threading.Lock()
 
 
 class FileTracker:
@@ -68,13 +71,14 @@ class FileTracker:
 
     def create_ticket(self, title: str, body: str, labels: list[str],
                       parent: str | None = None) -> Ticket:
-        n = len(list((self.root / "tickets").glob("*.yaml"))) + 1
-        # Metadata nhúng trong mô tả là hợp đồng chung; backend đĩa phải đọc nó
-        # giống hệt Backlog và GitLab, nếu không nó lại che mất lỗi thay vì lộ ra.
-        ticket = Ticket(id=f"T-{n:03d}", title=title, body=body, labels=list(labels),
-                        parent=parent or meta(body, "parent"),
-                        base_sha=meta(body, "base_sha"))
-        self._save(ticket)
+        with _CREATE_LOCK:
+            n = len(list((self.root / "tickets").glob("*.yaml"))) + 1
+            # Metadata nhúng trong mô tả là hợp đồng chung; backend đĩa phải đọc nó
+            # giống hệt Backlog và GitLab, nếu không nó lại che mất lỗi thay vì lộ ra.
+            ticket = Ticket(id=f"T-{n:03d}", title=title, body=body, labels=list(labels),
+                            parent=parent or meta(body, "parent"),
+                            base_sha=meta(body, "base_sha"))
+            self._save(ticket)
         return ticket
 
     def notify(self, ticket_id: str, message: str) -> None:

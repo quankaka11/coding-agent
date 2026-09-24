@@ -1,0 +1,132 @@
+/* Hệ token. Màu mã hoá bốn kết cục của hệ thống, không phải đèn giao thông:
+   `NO_MR` là kết quả hợp lệ nên nó xám; chỉ "cần người" được màu mạnh, vì đó là
+   thứ duy nhất đòi người ra tay. Bố cục là khung ứng dụng: nền dịu, thẻ nổi. */
+
+:root {
+  --bg: #f1f4f6;             /* nền ứng dụng */
+  --surface: #ffffff;        /* thẻ, sidebar, tiêu đề trang */
+  --surface-2: #f6f8fa;      /* ô nhập, hàng phụ, đầu bảng */
+  --ink: #15202e;            /* chữ chính — mực xanh đen */
+  --ink-soft: #5b6674;       /* chữ phụ */
+  --ink-mute: #8a95a1;       /* nhãn nhỏ, placeholder */
+  --line: #e3e8ec;           /* viền thẻ */
+  --line-strong: #c9d1d8;    /* viền ô nhập, nút phụ */
+
+  --verdigris: #1f7a63;      /* đạt, đã mở MR, đang trực */
+  --verdigris-bg: #e6f4ef;
+  --stamp: #c81e5b;          /* DUY NHẤT cho: cần người, luật G fail */
+  --stamp-bg: #fbe7ee;
+  --amber: #8a5300;          /* ĐANG CHẠY — nấc thiếu của bản trước */
+  --amber-bg: #fcf0dc;
+  --quiet-bg: #eceff2;       /* không ra MR, không áp dụng */
+
+  /* Bốn vai trạng thái. Component gọi tên vai, không gọi tên màu: đổi sắc độ
+     thì sửa ở trên, không phải đi tìm trong 20 file. */
+  --ok: var(--verdigris);        --ok-bg: var(--verdigris-bg);
+  --busy: var(--amber);          --busy-bg: var(--amber-bg);
+  --human: var(--stamp);         --human-bg: var(--stamp-bg);
+  --quiet: var(--ink-soft);
+
+  --t-xs: 0.786rem;          /* 11px */
+  --t-s: 0.857rem;           /* 12px */
+  --t-0: 1rem;               /* 14px — thân */
+  --t-1: 1.143rem;           /* 16px — tiêu đề thẻ */
+  --t-2: 1.571rem;           /* 22px — tiêu đề trang */
+  --t-3: 2.571rem;           /* 36px — từ phán quyết */
+
+  --s-1: 4px;  --s-2: 8px;  --s-3: 12px;  --s-4: 16px;
+  --s-5: 24px; --s-6: 32px; --s-7: 48px;
+
+  --r-1: 6px;                /* nút, ô nhập, pill */
+  --r-2: 10px;               /* thẻ */
+  --shadow: 0 1px 2px rgba(21, 32, 46, 0.05), 0 0 0 1px var(--line);
+  --shadow-2: 0 6px 24px rgba(21, 32, 46, 0.10), 0 0 0 1px var(--line);
+
+  --sans: 'Archivo Variable', system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  --focus: 2px solid var(--ink);
+  --sidebar: 236px;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #0f151b;
+    --surface: #171f28;
+    --surface-2: #1e2731;
+    --ink: #e2e8ed;
+    --ink-soft: #97a3af;
+    --ink-mute: #6c7884;
+    --line: #26313c;
+    --line-strong: #364350;
+    --verdigris: #4fb596;
+    --verdigris-bg: #16302a;
+    --stamp: #f25b91;
+    --stamp-bg: #3a1a28;
+    --amber: #e0a33c;
+    --amber-bg: #33280f;
+    --quiet-bg: #222c36;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 0 0 1px var(--line);
+    --shadow-2: 0 6px 24px rgba(0, 0, 0, 0.45), 0 0 0 1px var(--line);
+    --focus: 2px solid var(--ink);
+  }
+}
+
+:root[data-theme='dark'] {
+  --bg: #0f151b;
+  --surface: #171f28;
+  --surface-2: #1e2731;
+  --ink: #e2e8ed;
+  --ink-soft: #97a3af;
+  --ink-mute: #6c7884;
+  --line: #26313c;
+  --line-strong: #364350;
+  --verdigris: #4fb596;
+  --verdigris-bg: #16302a;
+  --stamp: #f25b91;
+  --stamp-bg: #3a1a28;
+  --amber: #e0a33c;
+  --amber-bg: #33280f;
+  --quiet-bg: #222c36;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 0 0 1px var(--line);
+  --shadow-2: 0 6px 24px rgba(0, 0, 0, 0.45), 0 0 0 1px var(--line);
+}
+
+* { box-sizing: border-box; }
+
+html { font-size: 14px; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: var(--t-0);
+  font-variation-settings: 'wdth' 100;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Chữ máy sinh — sha, tên nhánh, tên biến. Không dùng cho nhãn. */
+.mono { font-family: var(--mono); font-size: 0.92em; letter-spacing: -0.01em; }
+
+/* Từ phán quyết: trục width của Archivo là một phần của thiết kế, không phải
+   hiệu ứng. Nó chỉ xuất hiện ở đúng một chỗ trên mỗi màn hình. */
+.verdict {
+  font-size: var(--t-3);
+  font-variation-settings: 'wdth' 112, 'wght' 640;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+:focus-visible { outline: var(--focus); outline-offset: 2px; }
+
+a { color: inherit; text-underline-offset: 3px; text-decoration-color: var(--line-strong); }
+
+.prose { max-width: 66ch; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

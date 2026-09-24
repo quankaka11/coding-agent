@@ -13,6 +13,10 @@ TITLE_MAX = 60
 READY_KEYS = ("clear", "has_acceptance_criteria", "reproducible", "scoped",
               "deterministically_verifiable")
 T3_READY_KEYS = ("interface_specified", "ac_testable", "modules_declared")
+#: relaxed: chỉ hai mục này chặn. Các mục còn lại (tái hiện được, kiểm chứng tất định,
+#: interface T3…) fail thì vẫn đi tiếp — agent tự xoay, người duyệt plan thấy cảnh báo,
+#: và MR mở dạng Draft nếu không có bằng chứng test.
+RELAXED_BLOCKING = ("clear", "scoped")
 
 
 class SpecError(ValueError):
@@ -67,6 +71,16 @@ class Spec:
     def not_ready(self) -> list[str]:
         keys = READY_KEYS + (T3_READY_KEYS if self.task_type == "T3" else ())
         return [k for k in keys if self.readiness.get(k) != "pass"]
+
+    def blocking(self, relaxed: bool) -> list[str]:
+        """Mục readiness fail mà CHẶN run theo chế độ của hồ sơ."""
+        missing = self.not_ready()
+        return [k for k in missing if k in RELAXED_BLOCKING] if relaxed else missing
+
+    def soft_gaps(self, relaxed: bool) -> list[str]:
+        """Mục readiness fail nhưng relaxed cho đi tiếp — hiện thành cảnh báo trên plan."""
+        blocking = self.blocking(relaxed)
+        return [k for k in self.not_ready() if k not in blocking]
 
     def unexplained(self) -> list[str]:
         """Mục readiness fail mà agent chưa ghi lý do — phase_a sẽ xin bổ sung một lần."""

@@ -1,0 +1,28 @@
+# systemd unit chạy e2ea như một service trên máy chủ (không dùng Docker).
+#
+#   sudo cp deploy/e2ea.service /etc/systemd/system/
+#   sudo systemctl edit e2ea      # sửa User, WorkingDirectory, đường dẫn e2ea nếu khác
+#   sudo systemctl enable --now e2ea
+#   journalctl -u e2ea -f
+#
+# Chạy dưới một user RIÊNG, không phải tài khoản cá nhân: agent có Bash và đọc được mọi
+# thứ user đó đọc được. User này cần đã đăng nhập `claude` một lần (hoặc đặt
+# CLAUDE_CODE_OAUTH_TOKEN trong Environment=/EnvironmentFile=).
+[Unit]
+Description=e2ea — agent Backlog → MR
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=e2ea
+WorkingDirectory=/srv/e2ea
+ExecStart=/usr/local/bin/e2ea serve --dir /srv/e2ea --watch
+# SIGTERM: vòng quét dừng SAU khi run đang chạy xong — không giết ngang.
+KillSignal=SIGTERM
+TimeoutStopSec=1800
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -12,14 +12,15 @@ loại lại:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from pathlib import Path
 
 from ..core import gitutil, parsers
 from .baseline import Baseline
-from ..config.profile import CHECKS, Profile
-from ..core.run import RunContext
+from ..config.profile import CHECKS, Profile, matches
+from ..core.run import CmdResult, RunContext
 
 GATE_ORDER = ("build", "lint", "test", "typecheck", "secret_scan", "sast")
 
@@ -34,12 +35,17 @@ def run(ctx: RunContext, prof: Profile, repo: Path, base: Baseline | None = None
     }
     junit_path = ctx.run_dir / "gate-junit.xml"
 
+    if base is not None and (entry := _setup_if_deps_changed(ctx, prof, repo, base.base_sha)):
+        report["checks"]["setup"] = entry
+
     for name in GATE_ORDER:
         if not prof.is_available(name):
             report["checks"][name] = {"status": "out_of_scope", "reason": prof.reason(name)}
             ctx.emit("gate.check", check=name, status="out_of_scope", reason=prof.reason(name))
             continue
         cmd = prof.commands[name].format(junit=str(junit_path))
+        if name == "test":
+            parsers.reset(junit_path)
         res = ctx.cmd(cmd, cwd=repo, timeout=prof.limit("cmd_timeout_sec"))
         entry: dict = {"status": "pass" if res.ok else "fail", "exit_code": res.exit_code}
         if name == "test":
@@ -63,6 +69,48 @@ def run(ctx: RunContext, prof: Profile, repo: Path, base: Baseline | None = None
     return report
 
 
+#: (worktree, hash diff dependency) đã chạy setup — gate gọi nhiều lần trong một run,
+#: cài lại dependency mỗi lần là phí vài phút cho `npm ci`.
+_SETUP_DONE: set[str] = set()
+
+
+def setup(ctx: RunContext, prof: Profile, repo: Path, why: str) -> CmdResult | None:
+    """Chạy `commands.setup` (cài dependency) trong worktree. Không khai thì None.
+
+    Worktree mới checkout không có `node_modules`, `vendor/`, `target/`… — ngôn ngữ
+    nào không dùng venv chung thì phải cài lại trong từng worktree.
+    """
+    cmd = prof.commands.get("setup")
+    if not cmd:
+        return None
+    res = ctx.cmd(cmd, cwd=repo, timeout=prof.limit("cmd_timeout_sec"))
+    ctx.emit("setup.run", why=why, exit_code=res.exit_code, duration_ms=res.duration_ms,
+             level="info" if res.ok else "warn",
+             output=_tail(res.stdout + res.stderr, 20) if not res.ok else None)
+    return res
+
+
+def _setup_if_deps_changed(ctx: RunContext, prof: Profile, repo: Path, base_sha: str) -> dict | None:
+    if not prof.commands.get("setup"):
+        return None
+    try:
+        deps = [f for f in gitutil.changed_files(repo, base_sha)
+                if matches(f, prof.dependency_files)]
+        if not deps:
+            return None
+        diff = gitutil._git(repo, "diff", f"{base_sha}..HEAD", "--", *deps)
+    except RuntimeError:
+        return None
+    key = f"{repo}:{hashlib.sha1(diff.encode()).hexdigest()}"
+    if key in _SETUP_DONE:
+        return {"status": "pass", "reason": "dependency không đổi từ lần cài trước"}
+    res = setup(ctx, prof, repo, why=f"agent đổi file dependency: {deps[:5]}")
+    if res.ok:
+        _SETUP_DONE.add(key)
+        return {"status": "pass", "reason": f"cài lại dependency sau khi đổi {', '.join(deps[:3])}"}
+    return {"status": "fail", "exit_code": res.exit_code, "output": _tail(res.stdout + res.stderr)}
+
+
 def _test_vs_baseline(ctx: RunContext, prof: Profile, repo: Path, junit_path: Path,
                       base: Baseline | None) -> dict:
     """MUST PASS *so với baseline*: lỗi sẵn có không tính, lỗi mới thì tính.
@@ -83,6 +131,7 @@ def _test_vs_baseline(ctx: RunContext, prof: Profile, repo: Path, junit_path: Pa
         fail_sets = [candidates]
         for i in range(reruns):
             path = ctx.run_dir / f"gate-rerun-{i + 1}-junit.xml"
+            parsers.reset(path)
             ctx.cmd(prof.commands["test"].format(junit=str(path)), cwd=repo,
                     timeout=prof.limit("cmd_timeout_sec"))
             fail_sets.append(set(parsers.junit(path).failed) - known)

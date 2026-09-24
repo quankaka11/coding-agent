@@ -17,7 +17,7 @@ STATUSES = ("available", "out_of_scope")
 #: Nơi lệnh coverage phải ghi kết quả, và nơi G-7 đọc. Một quy ước duy nhất.
 COVERAGE_FILE = "coverage.json"
 _TOP = {"repo_id", "base_branch", "pilot_type", "allowed_paths", "forbidden_paths",
-        "test_globs", "commands", "checks", "limits", "conventions", "mutation",
+        "test_globs", "dependency_files", "commands", "checks", "limits", "conventions", "mutation",
         "tracker", "forge", "agent", "notify"}
 
 DEFAULT_LIMITS = {
@@ -37,6 +37,8 @@ DEFAULT_LIMITS = {
     #: Ticket ở `agent:running` quá số phút này mà không chốt kết cục thì coi là
     #: tiến trình đã chết và giao cho người. None = gấp đôi run_timeout_min.
     "running_stale_min": None,
+    #: Số ticket xử lý cùng lúc (mỗi ticket một worktree riêng). 1 = tuần tự như cũ.
+    "max_parallel": 1,
 }
 #: `timeout_sec` là trần cho CẢ bước mutation; `per_mutant_timeout_sec` là trần cho
 #: một lần chạy test. Dùng chung một số thì một mutant chậm nuốt trọn ngân sách.
@@ -54,14 +56,38 @@ DEFAULT_NOTIFY = {"kind": "none", "url_env": "NOTIFY_WEBHOOK_URL", "events": Non
 #: `permission_mode` là chế độ quyền của `claude -p`. Headless không có ai trả lời prompt,
 #: nên tool ngoài `allowed_tools` bị từ chối ở mọi mode; `auto` để claude tự quyết trong
 #: phạm vi đó. Hook chặn forbidden_paths (PreToolUse) vẫn chạy ở mọi mode.
+#: `sandbox`: sandbox OS-level của Claude Code cho lệnh Bash của agent (bubblewrap + socat
+#: trên Linux) — chặn đọc file bí mật, chặn ghi ngoài worktree, mạng chỉ tới registry gói.
+#: `auto` = bật nếu máy có; `on` = bắt buộc, không có thì agent không chạy; `off` = tắt.
+#: `allowed_domains`: thêm domain Bash của agent được gọi (registry nội bộ…).
 DEFAULT_AGENT = {"binary": "claude", "model": None, "effort": None,
                  "permission_mode": "auto",
-                 "allowed_tools": "Read,Write,Edit,Glob,Grep,Bash", "timeout_sec": 1800}
+                 "allowed_tools": "Read,Write,Edit,Glob,Grep,Bash", "timeout_sec": 1800,
+                 "sandbox": "auto", "allowed_domains": []}
+SANDBOX_MODES = ("auto", "on", "off")
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 PERMISSION_MODES = ("auto", "acceptEdits", "dontAsk", "bypassPermissions", "manual", "plan")
 #: conventions.intake_mode: `assume` (mặc định) — Intake tự chọn cách hiểu hẹp nhất, ghi
 #: giả định, không hỏi lại; `ask` — mơ hồ là fail readiness và hỏi người viết ticket.
 INTAKE_MODES = ("assume", "ask")
+#: conventions.mode:
+#:   `relaxed` (mặc định) — mục tiêu là RA MR: ticket không chứng minh được bằng test viết
+#:     trước (T4, test không viết được, test pass sẵn) vẫn được implement, gate vẫn phải
+#:     xanh, và MR mở dạng Draft kèm lý do. Luật heuristic (G-4/G-7/G-10) hết vòng tự sửa
+#:     thì hạ xuống needs_review thay vì NO_MR. Sửa file dependency được, gắn cờ review.
+#:   `strict` — hành vi gốc: không có bằng chứng fail-trước thì NO_MR.
+MODES = ("relaxed", "strict")
+TASK_TYPES = ("T1", "T2", "T3", "T4")
+#: File khai báo dependency, mọi hệ sinh thái. relaxed: sửa được (G-11 gắn cờ review,
+#: gate chạy lại `commands.setup`); strict: G-11 fail. Hồ sơ khai đè được.
+DEFAULT_DEPENDENCY_FILES = [
+    "**/pyproject.toml", "**/setup.py", "**/setup.cfg", "**/requirements*.txt",
+    "**/requirements/*.txt", "**/poetry.lock", "**/uv.lock", "**/Pipfile", "**/Pipfile.lock",
+    "**/package.json", "**/package-lock.json", "**/yarn.lock", "**/pnpm-lock.yaml",
+    "**/go.mod", "**/go.sum", "**/pom.xml", "**/build.gradle", "**/build.gradle.kts",
+    "**/Cargo.toml", "**/Cargo.lock", "**/composer.json", "**/composer.lock",
+    "**/Gemfile", "**/Gemfile.lock", "**/*.csproj", "**/packages.lock.json",
+]
 
 
 class ProfileError(ValueError):
@@ -76,6 +102,7 @@ class Profile:
     allowed_paths: list[str] = field(default_factory=list)
     forbidden_paths: list[str] = field(default_factory=list)
     test_globs: list[str] = field(default_factory=lambda: ["tests/**", "**/test_*.py", "**/*_test.py"])
+    dependency_files: list[str] = field(default_factory=lambda: list(DEFAULT_DEPENDENCY_FILES))
     commands: dict[str, str] = field(default_factory=dict)
     checks: dict[str, dict] = field(default_factory=dict)
     limits: dict[str, Any] = field(default_factory=dict)
@@ -114,6 +141,19 @@ class Profile:
 
     def notify_cfg(self, key: str) -> Any:
         return self.notify.get(key, DEFAULT_NOTIFY[key])
+
+    @property
+    def mode(self) -> str:
+        return self.conventions.get("mode") or "relaxed"
+
+    @property
+    def relaxed(self) -> bool:
+        return self.mode == "relaxed"
+
+    @property
+    def auto_approve(self) -> list[str]:
+        """Loại task được tự duyệt plan (bỏ qua bước người duyệt). Mặc định: không."""
+        return list(self.conventions.get("auto_approve") or [])
 
 
 def load(path: str | Path) -> Profile:
@@ -162,8 +202,16 @@ def _validate(p: Profile) -> None:
         errs.append(f"notify có khoá lạ {sorted(unknown)}")
     if p.conventions.get("intake_mode", "assume") not in INTAKE_MODES:
         errs.append(f"conventions.intake_mode phải thuộc {INTAKE_MODES}")
+    if p.mode not in MODES:
+        errs.append(f"conventions.mode phải thuộc {MODES}")
+    if bad := [t for t in p.auto_approve if t not in TASK_TYPES]:
+        errs.append(f"conventions.auto_approve chỉ nhận {TASK_TYPES}, đang có {bad}")
+    if int(p.limit("max_parallel")) < 1:
+        errs.append("limits.max_parallel phải ≥ 1")
     if p.agent_cfg("permission_mode") not in PERMISSION_MODES:
         errs.append(f"agent.permission_mode phải thuộc {PERMISSION_MODES}")
+    if p.agent_cfg("sandbox") not in SANDBOX_MODES:
+        errs.append(f"agent.sandbox phải thuộc {SANDBOX_MODES}")
     if (eff := p.agent_cfg("effort")) and eff not in EFFORT_LEVELS:
         errs.append(f"agent.effort phải thuộc {EFFORT_LEVELS}")
     if p.notify_cfg("kind") not in ("none", "webhook"):
@@ -211,13 +259,16 @@ def doctor(p: Profile, repo: Path, package_root: Path | None = None) -> list[tup
             out.append((f"check {name}", True, f"out_of_scope — {p.reason(name)}"))
             continue
         cmd = p.commands.get(name, "")
-        tokens = cmd.split()
-        env_assign = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-        while tokens and env_assign.match(tokens[0]):
-            tokens.pop(0)
-        tool = tokens[0] if tokens else ""
+        tool = command_tool(cmd)
         found = bool(tool) and (shutil.which(tool) is not None or tool in ("python", "python3"))
         out.append((f"check {name}", found, cmd if found else f"không thấy lệnh {tool!r} trong PATH"))
+    if setup := p.commands.get("setup"):
+        tool = command_tool(setup)
+        found = bool(tool) and shutil.which(tool) is not None
+        out.append(("commands.setup", found, setup if found else f"không thấy lệnh {tool!r} trong PATH"))
+    out.append(("chế độ", True, f"{p.mode}" + (f", tự duyệt {p.auto_approve}" if p.auto_approve else "")
+                + f", chạy song song {p.limit('max_parallel')}"))
+    out.extend(isolation_rows(p))
 
     kind = p.notify_cfg("kind")
     if kind == "none":
@@ -242,6 +293,54 @@ def doctor(p: Profile, repo: Path, package_root: Path | None = None) -> list[tup
         out.append(("check coverage", True,
                     f"out_of_scope — {p.reason('coverage')}; G-7 sẽ không chấm"))
     return out
+
+
+def tracker_rows(p: Profile, base_dir: Path) -> list[tuple[str, bool, str]]:
+    """Soát tracker thật (có gọi mạng). Chỉ Backlog có điều cần soát: định dạng Markdown."""
+    if p.tracker_cfg("kind") != "backlog":
+        return []
+    from .. import tracker as tracker_mod
+    try:
+        ok, note = tracker_mod.make(p, base_dir).formatting()
+    except Exception as exc:                       # token sai, mạng lỗi: nói ra, không đổ doctor
+        return [("backlog đọc được", False, f"{type(exc).__name__}: {str(exc)[:200]}")]
+    # Không chặn: máy vẫn chạy đúng, chỉ là plan khó đọc — nhưng phải nói to.
+    return [("backlog: định dạng Markdown", True, note if ok else f"⚠ {note}")]
+
+
+def isolation_rows(p: Profile) -> list[tuple[str, bool, str]]:
+    """Agent có bị cô lập khỏi token không. Chỉ chặn `up` khi hồ sơ ĐÒI sandbox mà máy không có."""
+    from ..core.secrets import secret_files
+    from ..pipeline.sandbox import sandbox_available
+    mode = p.agent_cfg("sandbox")
+    ok_os, why = sandbox_available()
+    files = [f for f in secret_files() if f.exists()]
+    if mode == "off":
+        row = ("sandbox agent", True, "⚠ tắt (agent.sandbox: off) — Bash của agent đọc được mọi file user này đọc được")
+    elif ok_os:
+        row = ("sandbox agent", True, f"bật ({why}) — Bash của agent không đọc được file bí mật, "
+                                      "mạng chỉ tới registry gói")
+    elif mode == "on":
+        row = ("sandbox agent", False, f"agent.sandbox: on nhưng máy chưa dùng được sandbox: {why}")
+    else:
+        row = ("sandbox agent", True, f"⚠ chưa bật được ({why}) — luật deny vẫn chặn tool Read/Edit, nhưng Bash "
+                                      "của agent vẫn đọc được file trên đĩa. Cài bubblewrap + socat, hoặc chạy "
+                                      "trong container/user riêng")
+    rows = [row]
+    if files and not (ok_os and mode != "off"):
+        rows.append(("bí mật trên đĩa", True,
+                     f"⚠ {', '.join(str(f) for f in files[:3])} — khi chưa có sandbox, nên đưa token vào biến "
+                     "môi trường của tiến trình (systemd EnvironmentFile, docker env_file) thay vì .env cạnh repo"))
+    return rows
+
+
+def command_tool(cmd: str) -> str:
+    """Tên chương trình đầu tiên của một lệnh shell, bỏ qua `VAR=giá_trị` đứng trước."""
+    tokens = (cmd or "").split()
+    env_assign = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+    while tokens and env_assign.match(tokens[0]):
+        tokens.pop(0)
+    return tokens[0] if tokens else ""
 
 
 # -- so khớp glob (dùng chung cho G-3 và hook) -----------------------------

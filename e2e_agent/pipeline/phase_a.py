@@ -56,11 +56,19 @@ def run(ctx: RunContext, prof: Profile, repo: Path, ticket: Ticket, agent,
                  not_ready=spec.not_ready(), questions=spec.questions[:5],
                  assumptions=len(spec.assumptions), out_of_scope=len(spec.out_of_scope))
         if spec.task_type == "T4":
-            ctx.decide(Reason.NO_MR,
-                       "task loại T4: không kiểm chứng được bằng test tất định (phụ thuộc "
-                       "output LLM, đổi prompt, hành vi không quan sát được bằng assert)",
-                       kind=Kind.T4, objective=spec.objective)
-        if missing := spec.not_ready():
+            if not prof.relaxed:
+                ctx.decide(Reason.NO_MR,
+                           "task loại T4: không kiểm chứng được bằng test tất định (phụ thuộc "
+                           "output LLM, đổi prompt, hành vi không quan sát được bằng assert)",
+                           kind=Kind.T4, objective=spec.objective)
+            # relaxed: vẫn làm, gate vẫn phải xanh, MR mở dạng Draft vì không có bằng
+            # chứng test — người review MR là chốt chặn cho loại việc này.
+            ctx.emit("intake.t4_relaxed", level="warn",
+                     note="T4 ở chế độ relaxed: implement không có test viết trước, MR sẽ là Draft")
+        if gaps := spec.soft_gaps(prof.relaxed):
+            ctx.emit("intake.soft_gaps", level="warn", gaps=gaps,
+                     note="relaxed: readiness chưa đạt nhưng không chặn — hiện cảnh báo trên plan")
+        if missing := spec.blocking(prof.relaxed):
             if spec.unexplained():
                 spec = _ask_for_notes(ctx, agent, repo, spec, prompt)
                 spec.save(ctx.run_dir / "spec.yaml")
@@ -72,14 +80,14 @@ def run(ctx: RunContext, prof: Profile, repo: Path, ticket: Ticket, agent,
 
     with ctx.stage("discovery"):
         result = _ask(ctx, agent, repo, "discovery",
-                      _skill("discovery") + _spec_block(spec))
+                      _skill("discovery") + _spec_block(spec) + commands_block(prof))
         discovery = result.text
         (ctx.run_dir / "discovery.md").write_text(discovery, encoding="utf-8")
 
     with ctx.stage("planning"):
         prompt = (_skill("planning") + _spec_block(spec)
                   + f"\n## Kết quả discovery\n\n{discovery}\n"
-                  + _paths_block(prof) + rejected_block)
+                  + _paths_block(prof) + commands_block(prof) + rejected_block)
         result = _ask(ctx, agent, repo, "planning", prompt)
         plan, dropped = _tidy_plan(result.text)
         (ctx.run_dir / "plan.md").write_text(plan, encoding="utf-8")
@@ -178,8 +186,29 @@ def _mode_block(mode: str) -> str:
 
 
 def _paths_block(prof: Profile) -> str:
+    deps = ("\ndependency_files (được sửa nếu thật cần, sẽ bị gắn cờ review): "
+            f"{prof.dependency_files}\n" if prof.relaxed else
+            f"\ndependency_files (KHÔNG được sửa ở chế độ strict): {prof.dependency_files}\n")
     return (f"\n## Ràng buộc đường dẫn\n\nallowed_paths: {prof.allowed_paths}\n"
-            f"forbidden_paths: {prof.forbidden_paths}\n")
+            f"forbidden_paths: {prof.forbidden_paths}\n{deps}")
+
+
+def commands_block(prof: Profile) -> str:
+    """Lệnh thật của repo — ngôn ngữ nào cũng vậy, agent chạy đúng lệnh mà gate sẽ chạy.
+
+    Không có khối này thì agent tự đoán cách chạy test (thường là pytest), và ở repo
+    Node/Go/Java nó sẽ báo "test xanh" bằng một lệnh gate không bao giờ chạy.
+    """
+    rows = []
+    for name in ("setup", "build", "test", "lint"):
+        cmd = prof.commands.get(name)
+        if not cmd or (name != "setup" and not prof.is_available(name)):
+            continue
+        rows.append(f"- {name}: `{cmd.replace('{junit}', '/tmp/junit.xml')}`")
+    if not rows:
+        return ""
+    return ("\n## Lệnh của repo (gate chạy đúng các lệnh này)\n\n" + "\n".join(rows)
+            + "\n\nViết test bằng đúng framework mà lệnh test dùng, theo convention sẵn có.\n")
 
 
 _HEADING = re.compile(r"^#{1,6}\s*(.+?)\s*$", re.MULTILINE)

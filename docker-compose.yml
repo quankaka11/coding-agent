@@ -1,0 +1,37 @@
+# docker compose up -d --build     → giao diện ở http://127.0.0.1:8080, vòng quét tự bật
+#
+# Lần đầu:
+#   mkdir workspace && cp .env.example workspace/.env        # điền token vào ĐÂY (xem dưới)
+#   docker compose run --rm --entrypoint claude e2ea         # đăng nhập Claude một lần (/login), rồi thoát
+#   docker compose up -d --build
+#
+# Vì sao token nằm trong workspace/.env chứ không phải biến môi trường: sandbox của agent
+# chặn ĐỌC file đó (và file đăng nhập Claude trong volume home), nhưng trong container nó
+# không gỡ được biến môi trường khỏi Bash của agent. Đặt token vào `environment:` là để
+# agent đọc được bằng `env`. (CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY vẫn dùng được thay
+# cho bước đăng nhập, với đúng cái giá đó.)
+services:
+  e2ea:
+    build:
+      context: .
+      args:
+        EXTRA_APT: ""            # vd "golang-go" cho repo Go
+    image: e2ea:latest
+    restart: unless-stopped
+    # bubblewrap (sandbox cho lệnh Bash của agent) cần tạo namespace trong container. Nới
+    # seccomp/apparmor của CONTAINER để đổi lấy sandbox cho TỪNG lệnh agent chạy — đã thử:
+    # thiếu hai dòng này thì sandbox không bật và `e2ea doctor` báo ⚠.
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+    volumes:
+      - ./workspace:/work
+      - agent-home:/home/agent       # đăng nhập Claude, cache npm/pip/go
+    ports:
+      # Chỉ mở cho localhost của máy chủ: giao diện đọc/ghi được token trong .env.
+      - "127.0.0.1:8080:8080"
+    # Dừng là dừng SAU khi run đang chạy xong; cho đủ thời gian trước khi bị giết ngang.
+    stop_grace_period: 30m
+
+volumes:
+  agent-home:

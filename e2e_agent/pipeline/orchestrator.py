@@ -1,19 +1,28 @@
-"""Vòng quét label. Một ticket mỗi lần (giới hạn MVP).
+"""Vòng quét label. Mọi thứ diễn ra trên MỘT ticket — ticket người đã viết.
 
-`agent:try`            → Phase A
-`agent:plan-approved`  → tạo ticket chi tiết, gán `agent:impl`
-`agent:impl`           → Phase B
+`agent:try`            → Phase A → `agent:plan-ready` (hoặc tự duyệt, xem auto_approve)
+`agent:plan-approved`  → Phase B ngay trên ticket đó → MR
+`agent:impl`           → Phase B trên ticket chi tiết của phiên bản cũ (chỉ để tương thích)
+
+Trước đây duyệt plan đẻ ra một ticket `[impl]` con rồi Phase B chạy trên con. Plan và
+spec đã nằm sẵn trong comment bàn giao (handoff) của chính ticket gốc, nên ticket con
+chỉ thêm một thứ cho người dùng Backlog phải hiểu.
+
+`limits.max_parallel` > 1: các run chạy song song trong thread, mỗi run một worktree.
+Thao tác git trên repo gốc (fetch, thêm/xoá worktree) đi qua một khoá chung.
 """
 from __future__ import annotations
 
 import re
 import secrets
+import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 from ..agent import spec as spec_mod
 from ..config.profile import Profile
-from ..core import gitutil
+from ..core import gitutil, secrets as secrets_mod
 from ..core.reasons import LABEL, Kind, Reason, explain
 from ..core.run import RunContext, run_context
 from ..notify import NullNotifier
@@ -29,6 +38,10 @@ MAX_REJECTS = 2
 AGENT_MARK = "<!-- e2ea:agent -->"
 REJECT_MARK = "<!-- e2ea:rejected -->"
 DETAIL_MARK = "<!-- e2ea:detail -->"
+#: Comment link MR — người dùng Backlog thấy MR ngay trên ticket, và là mốc chống mở
+#: MR thứ hai cho cùng một plan khi ai đó đặt lại `agent:plan-approved`.
+MR_MARK = "<!-- e2ea:mr -->"
+AUTO_APPROVE_MARK = "<!-- e2ea:auto-approved -->"
 #: `<!-- e2ea:running <epoch> <run_id> -->` — mốc để biết một run đã bắt đầu từ bao
 #: giờ. Không có mốc này thì `agent:running` là trạng thái không có đường ra: tiến
 #: trình bị kill là ticket nằm đó vĩnh viễn, và không ai phân biệt được "đang chạy"
@@ -50,30 +63,82 @@ class Orchestrator:
         self.log_level, self.console = log_level, console
         #: Ticket đã thử quá số lần cho phép — vòng quét không đụng tới nữa.
         self.skip: set[str] = set()
+        # Tên biến token do hồ sơ khai cũng phải bị gỡ khỏi môi trường của agent và lệnh gate.
+        secrets_mod.protect(prof.tracker_cfg("api_key_env"), prof.tracker_cfg("token_env"),
+                            prof.forge_cfg("token_env"), prof.notify_cfg("url_env"))
+        self.max_parallel = max(1, int(prof.limit("max_parallel")))
+        #: fetch ghi FETCH_HEAD, `git worktree add/remove` sửa metadata — trên CÙNG một
+        #: repo gốc thì hai thread không được làm cùng lúc.
+        self._git_lock = threading.RLock()
+        self._pool: ThreadPoolExecutor | None = None
+        self._inflight: dict[str, Future] = {}
+        #: Lỗi ngoài RunContext của các run chạy trong thread — watcher đọc rồi ghi log.
+        self.errors: list[str] = []
 
     # -- quét ------------------------------------------------------------
-    def scan_once(self) -> list[tuple[str, str]]:
-        """Xử lý nhiều nhất một ticket cho mỗi trạng thái. Trả về [(ticket, kết cục)]."""
+    def scan_once(self, wait: bool = True) -> list[tuple[str, str]]:
+        """Một vòng quét. Trả về [(ticket, kết cục)] của những việc đã XONG.
+
+        max_parallel = 1: mỗi trạng thái nhiều nhất một ticket, chạy tuần tự (như cũ).
+        max_parallel > 1: việc nặng (Phase A/B) đẩy vào thread pool tới khi đủ chỗ.
+        `wait=False` (vòng watch) trả ngay, việc đang chạy báo về ở vòng sau;
+        `wait=True` (scan một lần, test) đợi mọi việc xong.
+        """
         done: list[tuple[str, str]] = []
         # Dọn ticket kẹt trước: chúng không nằm trong bất kỳ hàng đợi nào bên dưới.
         for ticket in self._stuck():
             done.append((ticket.id, self.recover(ticket).value))
-        for ticket in self._waiting(L.PLAN_APPROVED):
-            done.append((ticket.id, self.promote(ticket)))
         # Người đổi category sang `agent:plan-rejected` là một nước đi hợp lệ mà
         # comment plan đã dặn sẵn. Không quét trạng thái này thì ticket nằm im
         # vĩnh viễn và người duyệt mất đường nói "không".
         for ticket in self._waiting(L.PLAN_REJECTED):
             done.append((ticket.id, self.reject(ticket).value))
-        for ticket in self._waiting(L.TRY):
-            done.append((ticket.id, self.run_phase_a(ticket).value))
-        for ticket in self._waiting(L.IMPL):
-            done.append((ticket.id, self.run_phase_b(ticket).value))
-        return done
 
-    def _waiting(self, label: str) -> list[Ticket]:
-        """Ticket cũ nhất đang chờ ở trạng thái này, bỏ qua ticket đã đầu hàng."""
-        return [t for t in self.tracker.list_by_label(label) if t.id not in self.skip][:1]
+        slots = self.max_parallel - len(self._inflight) if self.max_parallel > 1 else 1
+        jobs: list[tuple[Ticket, object]] = []
+        # Phase B trước Phase A: ticket đã được duyệt là việc người đang chờ kết quả.
+        for label, fn in ((L.PLAN_APPROVED, self.run_phase_b), (L.IMPL, self.run_phase_b),
+                          (L.TRY, self.run_phase_a)):
+            if self.max_parallel == 1:
+                jobs += [(t, fn) for t in self._waiting(label)]
+            elif len(jobs) < slots:
+                jobs += [(t, fn) for t in self._waiting(label, slots - len(jobs))]
+
+        if self.max_parallel == 1:
+            for ticket, fn in jobs:
+                done.append((ticket.id, _value(fn(ticket))))
+            return done
+
+        self._pool = self._pool or ThreadPoolExecutor(self.max_parallel, thread_name_prefix="e2ea-run")
+        for ticket, fn in jobs:
+            self._inflight[ticket.id] = self._pool.submit(fn, ticket)
+        return done + self._collect(block=wait)
+
+    def drain(self) -> list[tuple[str, str]]:
+        """Đợi mọi run đang chạy xong rồi đóng pool. Gọi khi vòng watch dừng."""
+        out = self._collect(block=True)
+        if self._pool:
+            self._pool.shutdown(wait=True)
+            self._pool = None
+        return out
+
+    def _collect(self, block: bool) -> list[tuple[str, str]]:
+        out = []
+        for ticket_id, fut in list(self._inflight.items()):
+            if not block and not fut.done():
+                continue
+            try:
+                out.append((ticket_id, _value(fut.result())))
+            except Exception as exc:        # run_* tự bắt lỗi; tới đây là lỗi ngoài ctx
+                out.append((ticket_id, Reason.ERROR.value))
+                self.errors.append(f"{ticket_id}: {type(exc).__name__}: {exc}")
+            self._inflight.pop(ticket_id, None)
+        return out
+
+    def _waiting(self, label: str, n: int = 1) -> list[Ticket]:
+        """n ticket cũ nhất đang chờ ở trạng thái này, bỏ qua ticket đã đầu hàng/đang chạy."""
+        return [t for t in self.tracker.list_by_label(label)
+                if t.id not in self.skip and t.id not in self._inflight][:n]
 
     # -- ticket kẹt ở agent:running ---------------------------------------
     def _stale_minutes(self) -> float:
@@ -90,8 +155,8 @@ class Orchestrator:
         stale_after = self._stale_minutes() * 60
         out: list[Ticket] = []
         for ticket in self.tracker.list_by_label(L.RUNNING):
-            if ticket.id in self.skip:
-                continue
+            if ticket.id in self.skip or ticket.id in self._inflight:
+                continue          # đang chạy trong pool của chính tiến trình này
             comments = self.tracker.comments(ticket.id)
             if not ticket.parent and (ticket.id in waiting_parents
                                       or any(DETAIL_MARK in c for c in comments)):
@@ -133,7 +198,8 @@ class Orchestrator:
         # không thì trông vào remote `origin` của clone.
         remote = getattr(self.forge, "fetch_url", lambda: None)() or "origin"
         try:
-            tip = gitutil.remote_tip(self.repo, branch, remote=remote)
+            with self._git_lock:
+                tip = gitutil.remote_tip(self.repo, branch, remote=remote)
         except (RuntimeError, OSError) as exc:
             tip = None
             ctx.emit("base.fetch_failed", level="warn", branch=branch, error=str(exc)[:200],
@@ -170,9 +236,10 @@ class Orchestrator:
             # nhất. Cho nó một worktree riêng: agent giữ nguyên mọi công cụ (Discovery
             # cần chạy thử lệnh), còn repo của người thì không ai chạm tới được.
             base_sha = self._base_sha(ctx)
-            work = sandbox.create_detached(
-                self.repo, sandbox.under(self.repo, self.work_root) / f"read-{ticket.id}",
-                base_sha)
+            with self._git_lock:
+                work = sandbox.create_detached(
+                    self.repo, sandbox.under(self.repo, self.work_root) / f"read-{ticket.id}",
+                    base_sha)
             sandbox.install_guardrails(work, self.profile_path, self.package_root)
             ctx.emit("sandbox.ready", work=str(work), base=base_sha[:8], mode="chỉ đọc")
             try:
@@ -182,11 +249,21 @@ class Orchestrator:
                              note="Phase A đã sửa file dù chỉ được phép đọc — thay đổi bị "
                                   "bỏ cùng worktree, repo gốc không hề bị chạm")
             finally:
-                sandbox.remove(self.repo, work)
+                with self._git_lock:
+                    sandbox.remove(self.repo, work)
             spec = out["spec"]
             self._say(ticket.id, handoff.pack(
-                _plan_comment(out["plan"], spec, base_sha), base_sha=base_sha,
+                _plan_comment(out["plan"], spec, base_sha, self.prof), base_sha=base_sha,
                 spec_yaml=spec.dumps(), plan=out["plan"]))
+            if spec.task_type in self.prof.auto_approve:
+                # Tự duyệt theo hồ sơ: người vẫn đọc được plan ngay trên ticket, và vẫn
+                # còn chốt chặn ở bước review MR.
+                self._say(ticket.id, f"{AUTO_APPROVE_MARK}\nPlan loại `{spec.task_type}` được tự "
+                                     f"duyệt theo hồ sơ repo (`conventions.auto_approve`). Agent "
+                                     f"bắt đầu viết code ở vòng quét tới.")
+                self.tracker.set_state(ticket.id, L.PLAN_APPROVED)
+                ctx.decide(Reason.OK, "plan đã tự duyệt theo hồ sơ, chờ Phase B",
+                           label=L.PLAN_APPROVED, base_sha=base_sha[:8], auto_approved=True)
             self.tracker.set_state(ticket.id, L.PLAN_READY)
             self.tracker.notify(ticket.id, _notice(ticket))
             self._announce(ctx, PLAN_READY, "Plan chờ duyệt", ticket,
@@ -197,44 +274,16 @@ class Orchestrator:
         return ctx.outcome
 
     # -- người duyệt xong ------------------------------------------------
-    def promote(self, ticket: Ticket) -> str:
-        """Người duyệt plan → tạo ticket chi tiết, chính nó mới vào Phase B."""
-        packed = handoff.unpack(self.tracker.comments(ticket.id))
-        if packed is None:
-            # Người đặt `agent:plan-approved` lên ticket chưa từng qua Phase A. Không
-            # có plan để duyệt, nên nếu cứ tạo ticket chi tiết thì nó rỗng và Phase B
-            # sẽ chết ở bước sau — xa chỗ gây lỗi, khó hiểu cho người vận hành.
-            with self._ctx(ticket, "A") as ctx:
-                ctx.on_finish(lambda c: self._finalize(ticket, c))
-                ctx.decide(Reason.NEEDS_HUMAN,
-                           f"{ticket.id} đang ở `{L.PLAN_APPROVED}` nhưng agent chưa lập plan nào "
-                           f"cho ticket này — không có gì để duyệt. Đổi category sang `{L.TRY}` "
-                           f"để agent đọc ticket và lập plan trước.", kind=Kind.MISROUTED)
-            return ctx.outcome.value
-        comments = self.tracker.comments(ticket.id)
-        # Chỉ tính ticket chi tiết sinh ra SAU plan mới nhất: plan lạc hậu → agent lập
-        # plan lại → plan mới được duyệt phải đẻ được ticket chi tiết mới; còn cùng một
-        # plan mà đặt lại `agent:plan-approved` thì vẫn không đẻ thêm.
-        last_plan = max((i for i, c in enumerate(comments) if handoff.OPEN in c), default=-1)
-        if already := [c for c in comments[last_plan + 1:] if DETAIL_MARK in c]:
-            # Đặt lại `agent:plan-approved` lần nữa không được đẻ thêm một ticket
-            # chi tiết nữa: hai ticket cùng một plan thì Phase B chạy hai lần và
-            # mở hai MR cho cùng một việc.
-            self.tracker.set_state(ticket.id, L.RUNNING)
-            return f"đã có ticket chi tiết từ trước — {_short(already[-1], 80)}"
-        # Rời `agent:plan-approved` TRƯỚC khi tạo ticket con. Đổ giữa hai bước thì
-        # ticket gốc ở `agent:running` có con ở `agent:impl` — _stuck() nhận ra cặp
-        # này và không đụng. Thứ tự ngược lại để hở một cửa sổ đẻ hai ticket con.
-        self.tracker.set_state(ticket.id, L.RUNNING)
-        detail = self.tracker.create_ticket(
-            title=f"[impl] {ticket.title}",
-            body=f"<!-- base_sha: {packed.base_sha} -->\n\n"
-                 f"## Spec\n\n```yaml\n{packed.spec_yaml}\n```\n\n"
-                 f"## Plan đã duyệt\n\n{packed.plan}\n",
-            labels=[L.IMPL], parent=ticket.id)
-        self._say(ticket.id, f"{DETAIL_MARK}\nPlan đã duyệt. Ticket chi tiết: **{detail.id}** "
-                             f"{detail.url}\nPhase B sẽ chạy trên ticket đó.")
-        return f"đã tạo ticket chi tiết {detail.id}"
+    def approve(self, ticket: Ticket) -> str:
+        """Duyệt plan qua CLI: chỉ đổi category, vòng quét sau chạy Phase B.
+
+        Cùng một đường với người đổi category trên Backlog hay bấm Duyệt trên web —
+        không có đường tắt nào chạy Phase B mà bỏ qua kiểm tra của run_phase_b().
+        """
+        if handoff.unpack(self.tracker.comments(ticket.id)) is None:
+            return (f"{ticket.id} chưa có plan nào để duyệt — đặt `{L.TRY}` để agent lập plan trước")
+        self.tracker.set_state(ticket.id, L.PLAN_APPROVED)
+        return f"{ticket.id} → `{L.PLAN_APPROVED}`; Phase B chạy ở vòng quét tới"
 
     def reject(self, ticket: Ticket, why: str = "") -> Reason:
         """Người từ chối plan — qua CLI (`why` truyền thẳng) hoặc qua category.
@@ -262,48 +311,69 @@ class Orchestrator:
 
     # -- Phase B ---------------------------------------------------------
     def run_phase_b(self, ticket: Ticket) -> Reason:
+        comments = [] if ticket.parent else self.tracker.comments(ticket.id)
+        packed = None if ticket.parent else handoff.unpack(comments)
+        if packed is not None and _mr_after_plan(comments):
+            # Đặt lại `agent:plan-approved` trên plan đã ra MR: không mở MR thứ hai.
+            self.tracker.set_state(ticket.id, L.MR_CREATED)
+            return Reason.OK
         with self._ctx(ticket, "B") as ctx:
             ctx.on_finish(lambda c: self._finalize(ticket, c))
-            # `agent:impl` là trạng thái máy: chỉ ticket chi tiết do promote() sinh ra
-            # mới có liên kết về ticket gốc. Thiếu liên kết đó nghĩa là người gán nhầm
-            # category — chặn ngay trước khi dựng worktree hoặc gọi agent.
-            if not ticket.parent:
+            if ticket.parent:
+                # Ticket chi tiết `[impl]` của phiên bản cũ: spec/plan nằm trong body.
+                spec, plan = _read_detail(ctx, ticket)
+                approved_base = ticket.base_sha
+            elif packed is None:
                 ctx.decide(Reason.NEEDS_HUMAN,
-                           f"{ticket.id} đang ở `{L.IMPL}` nhưng không phải ticket chi tiết do "
-                           f"agent sinh ra (không có liên kết về ticket gốc). Nếu đây là ticket "
-                           f"bạn tự tạo, đổi category sang `{L.TRY}`.", kind=Kind.MISROUTED)
+                           f"{ticket.id} đang ở `{L.PLAN_APPROVED}`/`{L.IMPL}` nhưng agent chưa lập "
+                           f"plan nào cho ticket này — không có gì để duyệt. Đổi category sang "
+                           f"`{L.TRY}` để agent đọc ticket và lập plan trước.", kind=Kind.MISROUTED)
+            else:
+                try:
+                    spec = spec_mod.parse(packed.spec_yaml)
+                except spec_mod.SpecError as exc:
+                    ctx.decide(Reason.ERROR, f"spec trong comment bàn giao sai schema: {exc}")
+                plan, approved_base = packed.plan, packed.base_sha
             self._mark_running(ticket.id, ctx.run_id)
-            spec, plan = _read_detail(ctx, ticket)
             tip = self._base_sha(ctx)
-            base = ticket.base_sha or tip
+            base = approved_base or tip
             # Sửa trên đúng commit người đã duyệt, nhưng so với đầu nhánh gốc HIỆN
             # TẠI để biết phạm vi plan có còn đúng không (quyết định D1).
             if stale := _stale_files(self.repo, base, tip, spec.modules):
                 # Plan lạc hậu không cần người: agent lập plan lại trên code mới. Ticket
-                # chi tiết này đóng NO_MR, ticket gốc quay về `agent:try` — vòng sau Phase A
-                # chạy lại, plan mới lên chờ duyệt như bình thường (điểm duyệt duy nhất R-7).
-                ctx.parent_label = L.TRY
-                self._say(ticket.parent,
-                          f"Code trong `{stale[:5]}` đã đổi trên nhánh gốc sau khi plan được duyệt "
-                          f"(`{base[:8]}` → `{tip[:8]}`). Agent sẽ lập plan lại trên code mới; "
-                          f"ticket này tự quay về `{L.TRY}`.")
-                ctx.decide(Reason.NO_MR,
-                           "code trong phạm vi plan đã đổi trên nhánh gốc kể từ lúc duyệt — "
-                           f"ticket gốc {ticket.parent} đã đặt lại `{L.TRY}` để agent lập plan mới",
-                           kind=Kind.PLAN_STALE, files=stale[:10], base=base[:8], tip=tip[:8])
+                # quay về `agent:try` — vòng sau Phase A chạy lại, plan mới lên chờ duyệt
+                # như bình thường (điểm duyệt duy nhất R-7).
+                root = ticket.parent or ticket.id
+                why = (f"code trong `{stale[:5]}` đã đổi trên nhánh gốc sau khi plan được duyệt "
+                       f"(`{base[:8]}` → `{tip[:8]}`) — {root} đã đặt lại `{L.TRY}` để agent "
+                       f"lập plan mới trên code mới")
+                if ticket.parent:
+                    ctx.parent_label = L.TRY
+                    ctx.decide(Reason.NO_MR, why, kind=Kind.PLAN_STALE,
+                               files=stale[:10], base=base[:8], tip=tip[:8])
+                ctx.decide(Reason.NO_MR, why, kind=Kind.PLAN_STALE, label=L.TRY,
+                           files=stale[:10], base=base[:8], tip=tip[:8])
             # Một tên nhánh duy nhất cho cả worktree lẫn MR. Trước đây Phase B tự
             # đặt lại tên không hậu tố khi push, nên hậu tố ngẫu nhiên mất tác dụng
             # đúng ở chỗ nó cần có: lần chạy sau đè lên nhánh của MR đang mở.
             branch = f"agent/{ticket.id}-{secrets.token_hex(2)}"
-            work = sandbox.create(self.repo, self.work_root, branch, base)
+            with self._git_lock:
+                work = sandbox.create(self.repo, self.work_root, branch, base)
             sandbox.install_guardrails(work, self.profile_path, self.package_root)
             ctx.emit("sandbox.ready", work=str(work), branch=branch, base=base[:8])
             try:
                 phase_b.run(ctx, self.prof, self.repo, work, ticket, spec, plan,
                             self.agent, self.forge, branch)
             finally:
-                ctx.emit("sandbox.kept", work=str(work),
-                         note="giữ lại để người xem hiện trường")
+                if ctx.outcome is Reason.OK:
+                    # Đã ra MR: code nằm trên nhánh (remote hoặc nhánh local của forge
+                    # offline), worktree không còn gì để xem. Giữ lại chỉ làm đầy đĩa.
+                    with self._git_lock:
+                        sandbox.remove(self.repo, work)
+                    ctx.emit("sandbox.removed", work=str(work))
+                else:
+                    ctx.emit("sandbox.kept", work=str(work),
+                             note="giữ lại để người xem hiện trường — `e2ea clean` dọn sau")
         return ctx.outcome
 
     # -- dùng chung ------------------------------------------------------
@@ -332,7 +402,8 @@ class Orchestrator:
 
     def _finalize(self, ticket: Ticket, ctx: RunContext, skip_label: bool = False) -> None:
         if not skip_label:
-            label = LABEL[ctx.outcome or Reason.ERROR]
+            # decide(label=…) ghi đè nhãn mặc định (vd plan lạc hậu → quay về agent:try).
+            label = ctx.outcome_label or LABEL[ctx.outcome or Reason.ERROR]
             self.tracker.set_state(ticket.id, label)
             # Ticket gốc phải thấy được kết cục, nếu không nó kẹt ở agent:running mãi.
             if ticket.parent:
@@ -345,15 +416,27 @@ class Orchestrator:
             why = f"\n\n{ctx.outcome_why}" if ctx.outcome_why else ""
             meaning = explain(ctx.outcome, ctx.outcome_kind)
             self._say(ticket.id, f"**{_tag(ctx)}** — {meaning}{why}\n\nLog: `{ctx.run_dir}`")
+            if ctx.outcome_kind == Kind.PLAN_STALE.value:
+                return          # tự lập plan lại, không phải việc của người
             event = NEEDS_HUMAN if LABEL[ctx.outcome] == L.NEEDS_HUMAN else NO_MR
             self._announce(ctx, event, f"{_tag(ctx)} — {ticket.id}", ticket,
                            f"**{ticket.title}**{why}\n\n{meaning}")
         elif ctx.phase == "B":
-            self._announce(ctx, MR_CREATED, f"MR đã mở — {ticket.id}", ticket,
-                           f"**{ticket.title}**\n\nGate PASS và anti-gaming PASS, chờ review.",
-                           url=self._last_mr(ctx) or ticket.url)
+            mr = self._last_mr(ctx)
+            url, draft = mr.get("url", ""), bool(mr.get("draft"))
+            kind = "MR Draft" if draft else "MR"
+            if url:
+                self._say(ticket.parent or ticket.id,
+                          f"{MR_MARK}\n**{kind} đã mở:** {url}" + (
+                              "\n\nDraft vì không có bằng chứng test đầy đủ — lý do ghi ở đầu mô tả MR."
+                              if draft else ""))
+            self._announce(ctx, MR_CREATED, f"{kind} đã mở — {ticket.id}", ticket,
+                           f"**{ticket.title}**\n\n" + (
+                               "Gate PASS; chưa đủ bằng chứng test nên mở dạng Draft, cần review kỹ."
+                               if draft else "Gate PASS và anti-gaming PASS, chờ review."),
+                           url=url or ticket.url)
 
-    def _last_mr(self, ctx: RunContext) -> str:
+    def _last_mr(self, ctx: RunContext) -> dict:
         import json
         for line in (ctx.run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines() \
                 if (ctx.run_dir / "events.jsonl").is_file() else []:
@@ -362,8 +445,18 @@ class Orchestrator:
             except json.JSONDecodeError:
                 continue
             if event.get("event") == "mr.created":
-                return (event.get("data") or {}).get("url", "")
-        return ""
+                return event.get("data") or {}
+        return {}
+
+
+def _value(outcome) -> str:
+    return outcome.value if isinstance(outcome, Reason) else str(outcome)
+
+
+def _mr_after_plan(comments: list[str]) -> bool:
+    """Đã có comment link MR sau comment plan MỚI NHẤT chưa."""
+    last_plan = max((i for i, c in enumerate(comments) if handoff.OPEN in c), default=-1)
+    return any(MR_MARK in c for c in comments[last_plan + 1:])
 
 
 def _tag(ctx: RunContext) -> str:
@@ -423,21 +516,28 @@ def _stale_files(repo: Path, base: str, tip: str, modules: list[str]) -> list[st
     return [f for f in changed if any(f.startswith(m.rstrip("/")) for m in modules)]
 
 
-def _plan_comment(plan: str, spec, base_sha: str) -> str:
+def _plan_comment(plan: str, spec, base_sha: str, prof: Profile | None = None) -> str:
     # Khối rỗng thì bỏ hẳn, không in "(không có)": đây là thứ người phải đọc để
     # quyết duyệt hay không, mỗi dòng thừa là một dòng họ đọc để biết là không có gì.
     blocks = "".join(
         f"**{title}**\n" + "\n".join(f"- {x}" for x in items) + "\n\n"
         for title, items in (
             ("Các giả định Agent đã tự chốt", spec.assumptions),
-            ("Đã thấy nhưng KHÔNG thực hiện (ngoài ticket)", spec.out_of_scope))
+            ("Đã thấy nhưng KHÔNG thực hiện (ngoài ticket)", spec.out_of_scope),
+            ("⚠ Ticket chưa đạt đủ tiêu chí sẵn sàng (chế độ relaxed vẫn làm, MR có thể là Draft)",
+             [f"{k}: {(spec.readiness_notes or {}).get(k, 'không ghi lý do')}"
+              for k in spec.soft_gaps(True)] if prof is None or prof.relaxed else []))
         if items)
+    if spec.task_type == "T4":
+        blocks = ("**⚠ Loại T4:** không kiểm chứng được bằng test viết trước — agent vẫn làm, "
+                  "gate vẫn phải xanh, MR sẽ mở dạng **Draft**.\n\n") + blocks
     modules = ", ".join(f"`{m}`" for m in spec.modules) or "—"
     return (f"## Plan chờ duyệt\n\n**Chưa có dòng code nào được thay đổi.**\n\n"
             f"- Loại task: `{spec.task_type}`\n- Phạm vi thay đổi: {modules}\n"
             f"- Base commit: `{base_sha[:12]}`\n\n"
             f"{blocks}---\n\n{plan}\n\n---\n\n"
-            f"**Phê duyệt:** đổi label sang `{L.PLAN_APPROVED}`.\n"
+            f"**Phê duyệt:** đổi label sang `{L.PLAN_APPROVED}` — agent viết code và mở MR "
+            f"ngay trên ticket này.\n"
             f"**Từ chối kế hoạch:** đổi label sang `{L.PLAN_REJECTED}` kèm comment lý do "
             f"(quá {MAX_REJECTS} lần từ chối thì ticket chuyển `{L.NO_MR}`).")
 

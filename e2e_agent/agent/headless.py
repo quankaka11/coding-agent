@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..core.run import RunContext
+from ..core.secrets import agent_env
 
 DEFAULT_TOOLS = "Read,Write,Edit,Glob,Grep,Bash"
 WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
@@ -33,8 +34,11 @@ class ClaudeCode:
     def __init__(self, binary: str = "claude", model: str | None = None,
                  permission_mode: str = "auto",
                  allowed_tools: str = DEFAULT_TOOLS, timeout_sec: int = 1800,
-                 effort: str | None = None) -> None:
+                 effort: str | None = None, sandbox: str = "auto") -> None:
         self.binary, self.model, self.effort = binary, model, effort
+        from ..pipeline.sandbox import sandbox_level
+        #: Gỡ credential của claude khỏi Bash con — chỉ khi sandbox chạy ĐẦY ĐỦ (xem agent_env).
+        self.scrub = sandbox != "off" and sandbox_level()[0] == "full"
         self.permission_mode, self.allowed_tools = permission_mode, allowed_tools
         self.timeout_sec = timeout_sec
 
@@ -55,7 +59,7 @@ class ClaudeCode:
 
         ctx.emit("agent.start", agent=name, cwd=str(cwd), tools=self.allowed_tools,
                  permission_mode=self.permission_mode, model=self.model, effort=self.effort)
-        res = ctx.cmd(argv, cwd=cwd, timeout=self.timeout_sec)
+        res = ctx.cmd(argv, cwd=cwd, timeout=self.timeout_sec, env=agent_env(scrub=self.scrub))
         (ctx.run_dir / f"agent-{name}.jsonl").write_text(res.stdout, encoding="utf-8")
         out = _parse_stream(ctx, res.stdout, name)
         out.ok = res.ok and not out.error

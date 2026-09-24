@@ -1,4 +1,11 @@
-"""Đọc bí mật từ biến môi trường hoặc .env. Không bao giờ ghi ra log."""
+"""Đọc bí mật từ biến môi trường hoặc .env — và giữ chúng KHỎI tay agent.
+
+Agent chạy `claude -p` có Bash, và nội dung ticket là đầu vào không tin cậy: một câu
+prompt injection trong ticket đủ để nó `env` hay `cat ../../.env` rồi gửi token đi.
+Ở đây có hai thứ cho việc đó: môi trường đã gỡ bí mật cho mọi tiến trình con
+(`command_env`, `agent_env`), và danh sách file bí mật để sandbox/luật deny chặn đọc
+(`secret_files`).
+"""
 from __future__ import annotations
 
 import os
@@ -40,3 +47,54 @@ def _clean(value: str) -> str:
 
 def scrub(text: str, secret: str) -> str:
     return text.replace(secret, "«redacted»") if secret else text
+
+
+#: Tên biến bí mật của CHÍNH hệ thống (token GitLab, API key Backlog, webhook). Hồ sơ
+#: khai tên khác thì `protect()` thêm vào. So không phân biệt hoa thường.
+_SECRET_NAMES: set[str] = {"gitlab_token", "backlog_api_key", "google_chat_webhook",
+                           "notify_webhook_url"}
+#: Credential của Claude/Anthropic: `claude` cần chúng, nhưng lệnh test/lint/setup (chạy
+#: code agent vừa viết) thì không bao giờ cần.
+_AGENT_CREDENTIALS = {"anthropic_api_key", "anthropic_auth_token", "claude_code_oauth_token"}
+
+
+def protect(*names: str | None) -> None:
+    """Đánh dấu thêm tên biến là bí mật (vd `token_env` khai trong hồ sơ repo)."""
+    _SECRET_NAMES.update(n.lower() for n in names if n)
+
+
+def _without(env: dict[str, str], names: set[str]) -> dict[str, str]:
+    return {k: v for k, v in env.items() if k.lower() not in names}
+
+
+def command_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Môi trường cho lệnh gate/test/lint/setup: không token hệ thống, không credential Claude."""
+    return {**_without(dict(os.environ), _SECRET_NAMES | _AGENT_CREDENTIALS), **(extra or {})}
+
+
+def agent_env(scrub: bool = False) -> dict[str, str]:
+    """Môi trường cho `claude -p`: giữ credential của nó, gỡ token hệ thống.
+
+    `scrub=True` → CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1: chính `claude` gỡ credential của nó
+    khỏi môi trường của Bash/hook con và chạy Bash trong PID namespace riêng. CHỈ bật khi
+    sandbox chạy được: cờ này bắt buộc sandbox (thiếu socat là Bash hỏng hẳn — đã thấy thật)
+    và ép permission mode về `default`.
+    """
+    env = _without(dict(os.environ), _SECRET_NAMES)
+    if scrub:
+        env["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"] = "1"
+    else:
+        env.pop("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", None)
+    return env
+
+
+def secret_files() -> list[Path]:
+    """File chứa bí mật mà agent tuyệt đối không được đọc: các .env đang dùng và kho
+    `.e2ea/` (bản cất .env của từng repo) nằm cạnh chúng."""
+    out: list[Path] = []
+    for env in (Path(".env"), *EXTRA_ENV_FILES):
+        env = env.resolve()
+        for path in (env, env.parent / ".e2ea"):
+            if path not in out:
+                out.append(path)
+    return out

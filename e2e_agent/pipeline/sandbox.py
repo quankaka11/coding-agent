@@ -64,17 +64,120 @@ def remove(repo: Path, work: Path) -> None:
     shutil.rmtree(work, ignore_errors=True)
 
 
-def install_guardrails(work: Path, profile_path: Path, package_root: Path | None = None) -> None:
-    """Cài hook chặn forbidden_paths vào worktree, và giấu .claude khỏi git.
+#: Bí mật trong thư mục home mà agent không có lý do gì để đọc: (đường dẫn, là thư mục).
+HOME_SECRETS = [("~/.ssh", True), ("~/.git-credentials", False), ("~/.netrc", False),
+                ("~/.config/gh", True), ("~/.docker/config.json", False), ("~/.aws", True),
+                ("~/.kube", True), ("~/.claude/.credentials.json", False), ("~/.pypirc", False),
+                ("~/.npmrc", False), ("~/.gnupg", True)]
+#: Registry gói của các hệ sinh thái phổ biến — Bash của agent (trong sandbox) chỉ gọi
+#: được những domain này. Hồ sơ thêm được qua `agent.allowed_domains`.
+DEFAULT_ALLOWED_DOMAINS = [
+    "registry.npmjs.org", "registry.yarnpkg.com", "pypi.org", "files.pythonhosted.org",
+    "proxy.golang.org", "sum.golang.org", "repo.maven.apache.org", "repo1.maven.org",
+    "plugins.gradle.org", "services.gradle.org", "crates.io", "index.crates.io",
+    "static.crates.io", "rubygems.org", "repo.packagist.org", "packagist.org",
+    "github.com", "codeload.github.com", "objects.githubusercontent.com",
+]
+#: Chỗ ghi ngoài worktree mà toolchain cần (cache build của go, npm, maven, gradle…).
+SANDBOX_WRITABLE = ["/tmp", "~/.cache", "~/.npm", "~/.m2", "~/.gradle", "~/go", "~/.cargo"]
 
-    Hook là lưới thứ nhất (chặn lúc agent định ghi); G-3 vẫn là lưới thứ hai.
+_SANDBOX_CHECK: tuple[str | None, str] | None = None
+
+
+def sandbox_level() -> tuple[str | None, str]:
+    """Mức sandbox máy này chạy được: ("full" | "weak" | None, lý do). Cache một lần.
+
+    full: bubblewrap tạo được PID namespace và mount /proc — máy thật có bubblewrap + socat.
+          Chạy được cả CLAUDE_CODE_SUBPROCESS_ENV_SCRUB.
+    weak: chỉ bind-mount được (trong Docker với seccomp/apparmor unconfined) — Claude Code
+          chạy sandbox ở chế độ enableWeakerNestedSandbox: vẫn chặn đọc file bí mật và chặn
+          mạng, nhưng KHÔNG chạy được scrub (đã thử thật: "Can't mount proc").
     """
+    global _SANDBOX_CHECK
+    if _SANDBOX_CHECK is None:
+        _SANDBOX_CHECK = _probe()
+    return _SANDBOX_CHECK
+
+
+def sandbox_available() -> tuple[bool, str]:
+    level, why = sandbox_level()
+    return level is not None, why
+
+
+def _probe() -> tuple[str | None, str]:
+    if sys.platform == "darwin":
+        return "full", "macOS sandbox-exec"
+    if not sys.platform.startswith("linux"):
+        return None, f"không hỗ trợ trên {sys.platform}"
+    if missing := [b for b in ("bwrap", "socat") if not shutil.which(b)]:
+        return None, f"thiếu {', '.join(missing)} (apt install bubblewrap socat)"
+
+    def bwrap(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", *args, "true"],
+                              capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    if bwrap("--proc", "/proc", "--unshare-pid").returncode == 0:
+        return "full", "bubblewrap"
+    weak = bwrap()
+    if weak.returncode == 0:
+        return "weak", "bubblewrap, chế độ nested (container)"
+    return None, (f"bwrap không tạo được namespace: {weak.stderr.strip()[:120]} — trong Docker cần "
+                  "security_opt seccomp:unconfined và apparmor:unconfined")
+
+
+def agent_settings(prof, hook: str) -> dict:
+    """`.claude/settings.json` cho worktree: hook + luật deny + sandbox.
+
+    Luật deny (Read/Edit) chạy ở MỌI máy nhưng chỉ chặn tool Read/Edit của agent. Sandbox
+    chặn cả Bash (`cat ../../.env`, `curl` ra ngoài) ở mức OS — bật khi máy có.
+    """
+    from ..core.secrets import secret_files
+    deny: list[str] = []
+    abs_read: list[str] = []
+    for path in secret_files():
+        is_dir = path.is_dir() or path.name == ".e2ea"
+        pattern = f"//{path.as_posix().lstrip('/')}" + ("/**" if is_dir else "")
+        deny += [f"Read({pattern})", f"Edit({pattern})"]
+        abs_read.append(str(path))
+    for path, is_dir in HOME_SECRETS:
+        pattern = path + ("/**" if is_dir else "")
+        deny += [f"Read({pattern})", f"Edit({pattern})"]
+    settings: dict = {
+        "hooks": {"PreToolUse": [{"matcher": "Write|Edit|MultiEdit|NotebookEdit",
+                                  "hooks": [{"type": "command", "command": hook}]}]},
+        "permissions": {"deny": deny},
+    }
+    mode = prof.agent_cfg("sandbox") if prof is not None else "auto"
+    level, _ = sandbox_level()
+    if mode == "on" or (mode == "auto" and level):
+        settings["sandbox"] = {
+            "enabled": True,
+            "failIfUnavailable": mode == "on",
+            # Không cho agent xin chạy lệnh ngoài sandbox: headless không có ai để từ chối.
+            "allowUnsandboxedCommands": False,
+            # Trong container, bubblewrap không mount được /proc — chế độ nested của Claude Code.
+            "enableWeakerNestedSandbox": level == "weak",
+            "filesystem": {"denyRead": abs_read + [p for p, _ in HOME_SECRETS],
+                           "allowWrite": list(SANDBOX_WRITABLE)},
+            "network": {"allowedDomains": DEFAULT_ALLOWED_DOMAINS
+                        + list(prof.agent_cfg("allowed_domains") if prof is not None else [])},
+        }
+    return settings
+
+
+def install_guardrails(work: Path, profile_path: Path, package_root: Path | None = None) -> None:
+    """Cài hook + luật deny + sandbox vào worktree, và giấu .claude khỏi git.
+
+    Hook là lưới thứ nhất cho forbidden_paths (chặn lúc agent định ghi); G-3 vẫn là lưới
+    thứ hai. Luật deny và sandbox giữ token (.env, .e2ea/, ~/.ssh…) khỏi tay agent.
+    """
+    from ..config.profile import ProfileError, load
+    try:
+        prof = load(profile_path)
+    except (ProfileError, OSError):
+        prof = None
     claude_dir = work / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
-    command = hook_command(profile_path, package_root)
-    settings = {"hooks": {"PreToolUse": [{
-        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
-        "hooks": [{"type": "command", "command": command}]}]}}
+    settings = agent_settings(prof, hook_command(profile_path, package_root))
     (claude_dir / "settings.json").write_text(json.dumps(settings, indent=2), encoding="utf-8")
 
     exclude = work / ".git" / "info" / "exclude"
@@ -125,6 +228,10 @@ ARTEFACT_EXCLUDES = [
     ":(exclude,glob)**/__pycache__/**", ":(exclude,glob)**/.pytest_cache/**",
     ":(exclude,glob)**/htmlcov/**", ":(exclude,glob)**/.claude/**",
     ":(exclude,glob)**/node_modules/**",
+    # Ngôn ngữ khác: thư mục build/cache mà `commands.setup`/test đẻ ra trong worktree.
+    ":(exclude,glob)**/target/**", ":(exclude,glob)**/.gradle/**",
+    ":(exclude,glob)**/.next/**", ":(exclude,glob)**/.nyc_output/**",
+    ":(exclude,glob)**/coverage/**",
 ]
 
 
@@ -156,3 +263,40 @@ def commit_all(work: Path, message: str) -> str:
                    cwd=work, capture_output=True, text=True, check=False)
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=work,
                           capture_output=True, text=True).stdout.strip()
+
+
+def prune(repo: Path, work_root: Path, older_than_days: float, branches: bool = False,
+          dry_run: bool = False) -> list[str]:
+    """Dọn worktree của các run cũ hơn N ngày (run lỗi/NO_MR được giữ lại để xem).
+
+    `branches=True` xoá luôn nhánh local `agent/*` không còn worktree — chỉ nên bật khi
+    forge là GitLab (nhánh đã được push); forge offline dùng chính nhánh local làm "MR".
+    Trả về danh sách thứ đã (hoặc sẽ, nếu dry_run) xoá.
+    """
+    import time
+    root = under(repo, work_root)
+    cutoff = time.time() - older_than_days * 86400
+    removed: list[str] = []
+    if root.is_dir():
+        for work in sorted(root.iterdir()):
+            if work.is_dir() and work.stat().st_mtime < cutoff:
+                removed.append(str(work))
+                if not dry_run:
+                    remove(repo, work)
+    if not dry_run:
+        subprocess.run(["git", "worktree", "prune"], cwd=repo, capture_output=True, check=False)
+    if branches:
+        live = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=repo,
+                              capture_output=True, text=True).stdout
+        in_use = {line.split("refs/heads/", 1)[1] for line in live.splitlines()
+                  if line.startswith("branch refs/heads/")}
+        refs = subprocess.run(["git", "for-each-ref", "--format=%(refname:short) %(committerdate:unix)",
+                               "refs/heads/agent/"], cwd=repo, capture_output=True, text=True).stdout
+        for line in refs.splitlines():
+            name, _, stamp = line.partition(" ")
+            if name in in_use or not stamp.isdigit() or int(stamp) >= cutoff:
+                continue
+            removed.append(f"branch {name}")
+            if not dry_run:
+                subprocess.run(["git", "branch", "-D", name], cwd=repo, capture_output=True, check=False)
+    return removed

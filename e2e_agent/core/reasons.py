@@ -1,6 +1,6 @@
 """Mã kết cục (B2). Dùng chung cho log, label và metric — một nguồn duy nhất.
 
-Đúng BỐN kết cục, theo skill e2e-agent (references/e2e-agent/SKILL.md, mục "Khi kết
+Đúng BỐN kết cục, theo skill nội bộ e2e-agent (mục "Khi kết
 luận NO_MR"): ra MR, NO_MR, cần người, lỗi hệ thống. Mọi thứ khác không phải kết cục
 mà là việc agent phải làm tiếp trong cùng run (sửa lint, viết lại test, sửa code
 theo gate/anti-gaming, lập plan lại).
@@ -38,6 +38,7 @@ class Kind(str, Enum):
     GATE_FAIL = "gate_fail"              # gate vẫn fail sau số vòng tự sửa
     LOOP_LIMIT = "loop_limit"            # cùng một lỗi lặp lại quá trần
     ANTIGAMING = "antigaming"            # anti-gaming vẫn fail sau số vòng tự sửa
+    NO_CHANGE = "no_change"              # agent không đổi dòng code nguồn nào
     # -- NEEDS_HUMAN --------------------------------------------------------
     FLAKY = "flaky"                      # test không nhất quán giữa các lần chạy
     ANTIGAMING_EVIDENCE = "antigaming_evidence"  # G-4 thiếu bằng chứng / G-5 lệch commit
@@ -64,7 +65,7 @@ EXPLAIN_KIND: dict[Kind, str] = {
     Kind.NOT_READY: "Ticket chưa đạt Definition of Ready — viết rõ mục còn thiếu rồi đặt lại `agent:try`.",
     Kind.T4: "Task không kiểm chứng được bằng test tất định (phụ thuộc output LLM, đổi prompt…).",
     Kind.PLAN_REJECTED: "Plan bị từ chối quá số lần cho phép — ticket cần viết lại cho rõ.",
-    Kind.PLAN_STALE: ("Code trong phạm vi plan đã đổi trên nhánh gốc sau khi duyệt. Ticket gốc "
+    Kind.PLAN_STALE: ("Code trong phạm vi plan đã đổi trên nhánh gốc sau khi duyệt. Ticket "
                       "đã được đặt lại `agent:try` để agent lập plan mới trên code mới."),
     Kind.BASELINE_RED: ("Code chưa sửa đã đỏ trong chính phạm vi sắp sửa, hoặc lint đỏ mà agent "
                         "không tự sửa được — không phân biệt được lỗi sẵn có với lỗi agent gây ra."),
@@ -75,6 +76,8 @@ EXPLAIN_KIND: dict[Kind, str] = {
     Kind.GATE_FAIL: "Gate vẫn fail sau số vòng agent tự sửa cho phép.",
     Kind.LOOP_LIMIT: "Cùng một lỗi lặp lại quá trần — dừng để khỏi đốt token.",
     Kind.ANTIGAMING: "Anti-gaming vẫn fail sau số vòng agent tự sửa cho phép.",
+    Kind.NO_CHANGE: ("Agent kết thúc mà không đổi dòng code nguồn nào — không có gì để mở MR. "
+                     "Thường là code đã đúng sẵn, hoặc ticket cần làm ngoài vùng được phép."),
     Kind.FLAKY: "Test không nhất quán giữa các lần chạy — không quarantine, không skip, không xoá.",
     Kind.ANTIGAMING_EVIDENCE: ("Bằng chứng fail-trước hỏng hoặc gate không cùng commit — không ai được "
                                "tự sửa, giữ nguyên hiện trường."),

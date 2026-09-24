@@ -99,6 +99,10 @@ class RunContext:
         shell = isinstance(argv, str)
         t0 = time.monotonic()
         timed_out = False
+        if env is None:
+            # Lệnh gate chạy code agent vừa viết — không bao giờ thừa hưởng token.
+            from .secrets import command_env
+            env = command_env()
         try:
             proc = subprocess.run(argv, cwd=cwd, shell=shell, capture_output=True,
                                   text=True, timeout=timeout, env=env,
