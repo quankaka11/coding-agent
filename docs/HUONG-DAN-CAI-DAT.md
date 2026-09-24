@@ -368,7 +368,7 @@ giao diện) → vòng sau agent viết code → `agent:mr-created` kèm link MR
 Muốn chắc bản cài không hỏng mà không tốn tiền Claude (chỉ cho cài trực tiếp):
 
 ```bash
-cd coding-agent && python -m pytest tests -q        # 42 test, không gọi Claude, không cần mạng
+cd coding-agent && python -m pytest tests -q        # 46 test, không gọi Claude, không cần mạng
 ```
 
 ---

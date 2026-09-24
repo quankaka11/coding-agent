@@ -31,7 +31,8 @@ PLAN_MAX_LINES = 60
 
 
 def run(ctx: RunContext, prof: Profile, repo: Path, ticket: Ticket, agent,
-        rejections: list[str] | None = None) -> dict:
+        rejections: list[str] | None = None,
+        talk: list[tuple[str, str]] | None = None) -> dict:
     """Trả về {spec, plan, discovery}. Tự decide() và thoát nếu không đi tiếp được.
 
     `rejections` là lý do người đã bác các plan trước. Không đưa vào prompt thì
@@ -41,12 +42,16 @@ def run(ctx: RunContext, prof: Profile, repo: Path, ticket: Ticket, agent,
     rejected_block = _rejected_block(rejections)
     if rejections:
         ctx.emit("planning.rejections", count=len(rejections))
+    talk_block = _talk_block(talk)
+    if talk:
+        ctx.emit("intake.conversation", comments=len(talk),
+                 human=sum(1 for who, _ in talk if who == "human"))
 
     with ctx.stage("intake"):
         # Intake phải biết vùng agent được đụng: không thì scope/AC kéo cả docs, README
         # vào, planning đành ghi "không làm được", và MR mở ra với một AC tự nhận không đạt.
         prompt = (_skill("intake") + _mode_block(prof.conventions.get("intake_mode", "assume"))
-                  + _ticket_block(ticket) + _paths_block(prof) + rejected_block)
+                  + _ticket_block(ticket) + talk_block + _paths_block(prof) + rejected_block)
         result = _ask(ctx, agent, repo, "intake", prompt)
         spec = _parse_spec(ctx, agent, repo, result, ticket, prompt)
         # Lưu TRƯỚC khi phán: spec là thứ người xem khi hỏi "agent vướng ở đâu",
@@ -87,7 +92,7 @@ def run(ctx: RunContext, prof: Profile, repo: Path, ticket: Ticket, agent,
     with ctx.stage("planning"):
         prompt = (_skill("planning") + _spec_block(spec)
                   + f"\n## Kết quả discovery\n\n{discovery}\n"
-                  + _paths_block(prof) + commands_block(prof) + rejected_block)
+                  + talk_block + _paths_block(prof) + commands_block(prof) + rejected_block)
         result = _ask(ctx, agent, repo, "planning", prompt)
         plan, dropped = _tidy_plan(result.text)
         (ctx.run_dir / "plan.md").write_text(plan, encoding="utf-8")
@@ -176,6 +181,19 @@ def _rejected_block(rejections: list[str] | None) -> str:
             f"{lines}\n\nLập plan khác hẳn, đừng lặp lại hướng đã bị bác. "
             "Nếu lý do từ chối cho thấy ticket còn thiếu thông tin, hãy nói thẳng "
             "điều đó trong plan thay vì đoán.\n")
+
+
+def _talk_block(talk: list[tuple[str, str]] | None) -> str:
+    """Cuộc trao đổi trên ticket. Người trả lời ở comment là một phần của ticket."""
+    if not talk:
+        return ""
+    rows = "\n\n".join(f"**{'Người' if who == 'human' else 'Agent (lần chạy trước)'}:**\n{body}"
+                       for who, body in talk)
+    return ("\n## Trao đổi trên ticket (cũ → mới)\n\n"
+            "Comment của người ở đây là một phần của ticket, ngang với mô tả; chỗ nào mâu thuẫn "
+            "thì comment MỚI HƠN thắng. Câu nào agent đã hỏi mà người đã trả lời thì dùng câu trả "
+            "lời đó — KHÔNG hỏi lại, không đánh `fail` readiness vì chính điều đó nữa.\n\n"
+            f"{rows}\n")
 
 
 def _mode_block(mode: str) -> str:

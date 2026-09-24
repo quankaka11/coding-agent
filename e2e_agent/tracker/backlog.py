@@ -144,9 +144,14 @@ class BacklogTracker:
         self._call("POST", f"/issues/{ticket_id}/comments", [("content", body)])
 
     def comments(self, ticket_id: str) -> list[str]:
+        """100 comment MỚI NHẤT, trả về cũ → mới.
+
+        API trả tối đa 100 mỗi lần. `order=asc` là 100 cái CŨ nhất — ticket trao đổi dài thì
+        đúng câu trả lời mới nhất của người, plan mới nhất và mốc chạy mới nhất bị cắt mất.
+        """
         raw = self._call("GET", f"/issues/{ticket_id}/comments",
-                         [("count", "100"), ("order", "asc")])
-        return [c.get("content") or "" for c in raw]
+                         [("count", "100"), ("order", "desc")])
+        return [c.get("content") or "" for c in reversed(raw)]
 
     def set_state(self, ticket_id: str, label: str) -> None:
         """Gỡ hết category trạng thái cũ, đặt cái mới. Category khác giữ nguyên."""

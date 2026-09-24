@@ -10,7 +10,9 @@ người; (4) plan lạc hậu → ticket tự quay về agent:try, lập plan l
 MR; (7) lint đỏ sẵn → commit riêng; (8) test pass sẵn → agent viết lại rồi ra MR;
 (9) relaxed + T4 → Draft MR; (10) strict + T4 → NO_MR; (11) tự duyệt T1 và (12) hai ticket
 chạy song song; (13) relaxed + test pass sẵn mãi → Draft MR; (14) đổi file dependency →
-G-11 cần review; (15) agent không đổi code → NO_MR/no_change. Mọi việc diễn ra trên MỘT
+G-11 cần review; (15) agent không đổi code → NO_MR/no_change; (16) agent hỏi → người trả
+lời bằng comment → chạy lại thì agent đọc được, không hỏi lại; comment sau khi duyệt đi vào
+prompt implement và mô tả MR. Mọi việc diễn ra trên MỘT
 ticket (không còn ticket [impl] con). Mọi thứ ghi vào work/e2e-offline/ (đã gitignore).
 """
 import json, shutil, subprocess, sys, textwrap, time
@@ -113,7 +115,8 @@ def main():
              "always_weak": False,       # (13): mọi lượt test_gen đều viết test pass sẵn
              "task_type": "T1",          # (9)(10): intake trả về loại task này
              "deps": False,              # (14): implement thêm requirements.txt
-             "noop": False}              # (15): implement không sửa gì
+             "noop": False,              # (15): implement không sửa gì
+             "ask": False}               # (16): intake hỏi lại cho tới khi prompt có câu trả lời
 
     def test_gen(cwd):
         if state["weak_test"] or state["always_weak"]:
@@ -153,7 +156,28 @@ def main():
         (cwd / "src/broken.py").write_text("def broken():\n    pass\n")
         return "đã sửa src/broken.py"
 
-    agent = StubAgent({"intake": lambda cwd: spec_text(state["task_type"]),
+    ANSWER = "quantity không có thì coi là 1"
+    NOT_READY = textwrap.dedent("""
+        ```yaml
+        task_id: ''
+        objective: 'total() tính theo quantity'
+        task_type: T1
+        acceptance_criteria:
+          - {id: AC-1, text: 'total([{price: 5, quantity: 3}]) == 15'}
+        scope: {modules: ['src/cart.py']}
+        readiness: {clear: fail, has_acceptance_criteria: pass, reproducible: pass, scoped: pass, deterministically_verifiable: pass}
+        readiness_notes: {clear: 'không rõ quantity thiếu thì tính thế nào'}
+        questions: ['Món không có quantity thì tính là bao nhiêu?']
+        ```
+    """)
+
+    def intake(cwd):
+        # (16) Agent giả đọc chính prompt nó nhận: chưa thấy câu trả lời của người → hỏi.
+        if state["ask"] and ANSWER not in agent.prompts["intake"]:
+            return NOT_READY
+        return spec_text(state["task_type"])
+
+    agent = StubAgent({"intake": intake,
                        "discovery": lambda cwd: "## File liên quan\n- src/cart.py",
                        "planning": lambda cwd: "## Giải pháp\nNhân quantity.\n## File sẽ thay đổi\n- src/cart.py\n"
                                                "## Test sẽ viết\n- tests/test_cart_qty.py::test_quantity — AC-1\n"
@@ -354,6 +378,31 @@ def main():
     state["noop"], state["task_type"] = False, "T1"
     assert t15.labels == [L.NO_MR] and "no_change" in tracker.comments(t15.id)[-1], tracker.comments(t15.id)[-1]
     print("(15) OK — không đổi code nguồn → NO_MR/no_change")
+
+    # ---- (16) agent hỏi → người trả lời bằng comment → agent đọc được, không hỏi lại ------
+    state["ask"] = True
+    t16 = tracker.create_ticket("Ticket 16: thiếu thông tin", "total() sai khi có quantity.", [L.TRY])
+    orch.scan_once()
+    assert tracker.get(t16.id).labels == [L.NO_MR] and "not_ready" in tracker.comments(t16.id)[-1]
+    tracker.comment(t16.id, ANSWER)                     # người trả lời ngay trên ticket
+    tracker.set_state(t16.id, L.TRY)
+    print("vòng [16 hỏi lại]:", orch.scan_once())
+    assert tracker.get(t16.id).labels == [L.PLAN_READY], (tracker.get(t16.id).labels, tracker.comments(t16.id)[-1])
+    assert "Món không có quantity" in agent.prompts["intake"], "prompt phải có cả câu agent đã hỏi"
+    assert ANSWER in agent.prompts["planning"], "planning cũng phải thấy câu trả lời"
+    state["ask"] = False
+    # Người bổ sung SAU khi duyệt → vào prompt implement và mô tả MR
+    NOTE = "giữ nguyên chữ ký hàm total(items)"
+    tracker.comment(t16.id, NOTE)
+    tracker.set_state(t16.id, L.PLAN_APPROVED)
+    print("vòng [16 phase B]:", orch.scan_once())
+    assert tracker.get(t16.id).labels == [L.MR_CREATED], tracker.comments(t16.id)[-1]
+    impl_prompt = next(v for k, v in agent.prompts.items() if k.startswith("implement"))
+    assert NOTE in agent.prompts["implement-1"], impl_prompt[-500:]
+    assert ANSWER not in agent.prompts["implement-1"], "comment TRƯỚC plan đã nằm trong plan, không lặp lại"
+    assert NOTE not in agent.prompts["test_gen"], "prompt viết test không được thấy chỉ dẫn cách sửa"
+    assert NOTE in mr_of(t16.id)
+    print("(16) OK — agent đọc câu trả lời trong comment, không hỏi lại; comment sau duyệt vào implement + MR")
 
     # Mọi kết cục chỉ thuộc 4 loại; ticket cần người chỉ khi thật sự cần (kẹt run, sai category).
     outcomes = {json.loads(p.read_text())["reason"] for p in (ROOT / "runs").glob("*/*/outcome.json")}

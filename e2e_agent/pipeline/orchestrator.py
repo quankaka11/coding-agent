@@ -230,7 +230,11 @@ class Orchestrator:
             ctx.on_finish(lambda c: self._finalize(ticket, c,
                                                    skip_label=c.outcome is Reason.OK))
             self._mark_running(ticket.id, ctx.run_id)
-            rejections = _rejections(self.tracker.comments(ticket.id))
+            comments = self.tracker.comments(ticket.id)
+            rejections = _rejections(comments)
+            # Người trả lời câu hỏi của agent bằng comment rồi đặt lại `agent:try`: không
+            # đưa comment vào prompt thì agent đọc đúng mô tả cũ và hỏi lại y hệt.
+            talk = conversation(comments)
             # Phase A mang tiếng "chỉ đọc" nhưng vẫn chạy với Write/Edit/Bash, và
             # trước đây chạy thẳng trong repo gốc — lời dặn trong skill là lưới duy
             # nhất. Cho nó một worktree riêng: agent giữ nguyên mọi công cụ (Discovery
@@ -243,7 +247,7 @@ class Orchestrator:
             sandbox.install_guardrails(work, self.profile_path, self.package_root)
             ctx.emit("sandbox.ready", work=str(work), base=base_sha[:8], mode="chỉ đọc")
             try:
-                out = phase_a.run(ctx, self.prof, work, ticket, self.agent, rejections)
+                out = phase_a.run(ctx, self.prof, work, ticket, self.agent, rejections, talk)
                 if gitutil.is_dirty(work):
                     ctx.emit("phase_a.dirty", level="warn",
                              note="Phase A đã sửa file dù chỉ được phép đọc — thay đổi bị "
@@ -363,7 +367,8 @@ class Orchestrator:
             ctx.emit("sandbox.ready", work=str(work), branch=branch, base=base[:8])
             try:
                 phase_b.run(ctx, self.prof, self.repo, work, ticket, spec, plan,
-                            self.agent, self.forge, branch)
+                            self.agent, self.forge, branch,
+                            notes=[text for _, text in conversation(comments, since_last_plan=True)])
             finally:
                 if ctx.outcome is Reason.OK:
                     # Đã ra MR: code nằm trên nhánh (remote hoặc nhánh local của forge
@@ -457,6 +462,43 @@ def _mr_after_plan(comments: list[str]) -> bool:
     """Đã có comment link MR sau comment plan MỚI NHẤT chưa."""
     last_plan = max((i for i, c in enumerate(comments) if handoff.OPEN in c), default=-1)
     return any(MR_MARK in c for c in comments[last_plan + 1:])
+
+
+#: Comment máy của agent không mang thông tin cho lần chạy sau: mốc chạy, plan (đã có
+#: riêng), link ticket chi tiết/MR, thông báo tự duyệt.
+_MACHINE_ONLY = (RUNNING_MARK, handoff.OPEN, DETAIL_MARK, MR_MARK, AUTO_APPROVE_MARK)
+_LOG_LINE = re.compile(r"\n+Log: `[^`]*`\s*$")
+
+
+def conversation(comments: list[str], since_last_plan: bool = False,
+                 limit: int = 12, per_comment: int = 1500) -> list[tuple[str, str]]:
+    """[(người nói, nội dung)] cũ → mới, để agent đọc được cuộc trao đổi trên ticket.
+
+    "agent" là câu hỏi/lý do dừng mà agent để lại (NO_MR, NEEDS_HUMAN, từ chối); "human" là
+    mọi comment không mang dấu agent. `since_last_plan=True` (Phase B): chỉ comment của
+    người viết SAU plan mới nhất — những gì người bổ sung sau khi đã duyệt.
+    """
+    start = 0
+    if since_last_plan:
+        start = max((i for i, c in enumerate(comments) if handoff.OPEN in c), default=-1) + 1
+    out: list[tuple[str, str]] = []
+    for text in comments[start:]:
+        text = (text or "").strip()
+        if not text:
+            continue                 # Backlog ghi comment rỗng khi chỉ đổi category/trạng thái
+        if AGENT_MARK in text:
+            if since_last_plan or any(m in text for m in _MACHINE_ONLY):
+                continue
+            body = _LOG_LINE.sub("", text.replace(AGENT_MARK, "").replace(REJECT_MARK, "")).strip()
+            who = "agent"
+        elif handoff.OPEN in text:
+            continue
+        else:
+            body, who = text, "human"
+        if len(body) > per_comment:
+            body = body[:per_comment] + "…"
+        out.append((who, body))
+    return out[-limit:]
 
 
 def _tag(ctx: RunContext) -> str:

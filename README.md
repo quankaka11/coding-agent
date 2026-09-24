@@ -468,8 +468,8 @@ python3 scripts/e2e_offline.py              # chạy riêng trọn vòng, in t�
 ```
 
 `scripts/e2e_offline.py`: ticket → MR không LLM, không mạng (StubAgent, tracker/forge trên
-đĩa), 15 kịch bản: luồng 1 ticket, tự sửa G-10, lint đỏ sẵn, plan lạc hậu, relaxed/strict +
-Draft MR, tự duyệt, chạy song song, đổi dependency, no_change. `tests/` phủ hồ sơ/spec,
+đĩa), 16 kịch bản: luồng 1 ticket, tự sửa G-10, lint đỏ sẵn, plan lạc hậu, relaxed/strict +
+Draft MR, tự duyệt, chạy song song, đổi dependency, no_change, đọc comment trả lời trên ticket. `tests/` phủ hồ sơ/spec,
 parser JUnit, luật relaxed (G-3/G-4/G-8/G-10/G-11, hạ mức), cô lập agent (môi trường sạch,
 luật deny, sandbox, hook chặn ghi ngoài worktree) và sinh hồ sơ đa ngôn ngữ. CI:
 [.gitlab-ci.yml](.gitlab-ci.yml).

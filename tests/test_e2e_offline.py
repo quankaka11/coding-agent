@@ -1,4 +1,4 @@
-"""Trọn vòng ticket → MR offline (StubAgent, tracker/forge trên đĩa) — 15 kịch bản."""
+"""Trọn vòng ticket → MR offline (StubAgent, tracker/forge trên đĩa) — 16 kịch bản."""
 import subprocess
 import sys
 from pathlib import Path

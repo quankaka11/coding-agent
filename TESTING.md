@@ -104,6 +104,7 @@ Kết thúc phải in `TẤT CẢ ĐẠT`. Nó kiểm 15 điểm dễ hỏng, tr
 - `auto_approve: [T1]` + `max_parallel: 2` → hai ticket chạy song song, tự duyệt, cùng ra MR
 - agent thêm `requirements.txt` → G-11 cần review, G-3 không bắt oan
 - gate xanh mà agent không đổi code → `NO_MR/no_change`
+- agent hỏi → người trả lời bằng comment → đặt lại `agent:try` thì agent đọc được, không hỏi lại; comment viết sau khi duyệt vào prompt implement và mô tả MR
 
 Hiện trường nằm ở `work/e2e-offline/` (backlog, runs, repo, worktree) để xem lại.
 

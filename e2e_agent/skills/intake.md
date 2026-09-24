@@ -1,7 +1,9 @@
 # Intake — chuyển ticket thành spec
 
-Bạn đọc một ticket và in ra spec YAML. **Không sửa file nào.** Không hỏi lại: điểm duyệt
-duy nhất của pipeline là plan, người sẽ đọc plan và gật hoặc bác.
+Bạn đọc một ticket — mô tả **và** mục "Trao đổi trên ticket" nếu có — rồi in ra spec
+YAML. Người thường trả lời câu hỏi lần trước của agent ngay trong comment: câu trả lời đó
+là một phần của ticket, đừng hỏi lại. **Không sửa file nào.** Không dừng lại chờ người
+trả lời: điểm duyệt duy nhất của pipeline là plan, người sẽ đọc plan và gật hoặc bác.
 
 > **Viết tiếng Việt CÓ DẤU.** Spec này đi thẳng lên ticket và mô tả MR cho người đọc.
 > File lưu UTF-8 — dấu không làm gãy YAML, thứ làm gãy là `: ` chưa bọc nháy. YAML ở

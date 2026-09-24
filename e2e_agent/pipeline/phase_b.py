@@ -38,12 +38,20 @@ from . import handoff, phase_a, sandbox
 
 
 def run(ctx: RunContext, prof: Profile, repo: Path, work: Path, ticket: Ticket,
-        spec: spec_mod.Spec, plan: str, agent, forge, branch: str) -> dict:
+        spec: spec_mod.Spec, plan: str, agent, forge, branch: str,
+        notes: list[str] | None = None) -> dict:
+    """`notes`: comment của người viết SAU khi duyệt plan (vd chỉ dẫn sau một lần
+    NEEDS_HUMAN). Đi vào prompt implement và mô tả MR — không vào prompt viết test, vì
+    chỉ dẫn của người thường nói luôn cách sửa."""
     ctx.phase = "B"
     evidence: dict = {"self_fix": {"lint": False, "testgen_rounds": 0,
                                    "implement_rounds": 0, "antigaming_rounds": 0},
                       #: Mỗi dòng là một lý do MR phải là Draft. Rỗng = MR thường.
-                      "draft_reasons": []}
+                      "draft_reasons": [],
+                      "human_notes": list(notes or [])}
+    if notes:
+        ctx.emit("plan.human_notes", count=len(notes),
+                 note="comment của người sau khi duyệt plan — đưa vào prompt implement")
     is_t2 = spec.task_type == "T2"
     untested = spec.task_type == "T4"
     if untested and not prof.relaxed:
@@ -362,6 +370,12 @@ def _implement_loop(ctx: RunContext, prof: Profile, work: Path, spec, plan: str,
     seen_errors: list[str] = []
 
     untested = ""
+    if human := evidence.get("human_notes"):
+        untested += ("\n## Người bổ sung trên ticket sau khi duyệt plan (cũ → mới)\n\n"
+                     + "\n\n".join(f"- {n}" for n in human)
+                     + "\n\nLàm theo những điều này nếu chúng nằm trong phạm vi plan đã duyệt "
+                       "(`scope.modules`). Cần đụng ngoài phạm vi thì nói rõ trong kết quả, đừng tự "
+                       "mở rộng — việc đó cần plan mới.\n")
     if not evidence.get("test_freeze"):
         untested = ("\n## Không có test viết trước\n\nTask này KHÔNG có test đóng băng "
                     f"({evidence.get('no_proof') or 'không có'}). Nếu thay đổi kiểm được bằng test "
@@ -580,6 +594,10 @@ def _mr_body(ticket, spec, plan, base, gate_report, ag, evidence, head, ctx, wor
 
     # Mục trống (PRE_EXISTING, fix_lines, review) để lại dòng trống thừa — dồn lại,
     # nếu không mô tả MR trông như bị cắt dở.
+    notes_block = ""
+    if human := evidence.get("human_notes"):
+        notes_block = ("## Người bổ sung sau khi duyệt plan (đã đưa cho agent)\n\n"
+                       + "\n".join(f"- {' '.join(n.split())[:300]}" for n in human) + "\n\n")
     draft_block = ""
     if reasons := evidence.get("draft_reasons"):
         draft_block = ("## Vì sao MR này là Draft\n\n"
@@ -590,6 +608,7 @@ def _mr_body(ticket, spec, plan, base, gate_report, ag, evidence, head, ctx, wor
         + draft_block
         + f"## Giải pháp\n\n{approach}\n\n"
         + f"## Acceptance criteria\n\n{acs}\n\n{tests_line}\n\n"
+        + notes_block
         + section("Giả định đã duyệt", "\n".join(f"- {a}" for a in assumed))
         + section("Ngoài phạm vi (cố tình không thực hiện)", "\n".join(f"- {o}" for o in skipped))
         + f"""## Bằng chứng
