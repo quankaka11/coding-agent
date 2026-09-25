@@ -3,4 +3,4 @@
 Nguyên tắc N-1: không module nào trong gói này được biết tên repo, đường dẫn
 hay lệnh cụ thể của một dự án. Mọi thứ đó nằm trong repo-profile.yaml.
 """
-__version__ = "0.5.3"
+__version__ = "0.6.1"
