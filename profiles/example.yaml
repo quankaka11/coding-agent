@@ -63,8 +63,11 @@ tracker:
   space: testagent.backlog.com
   project: "831684"                # projectKey (vd ABC) hoặc id dạng số
   api_key_env: backlog_api_key     # tên biến môi trường hoặc khoá trong .env
-  # Trạng thái agent biểu diễn bằng CATEGORY của Backlog (chuỗi tự do, nhiều giá trị).
-  # Chạy `e2ea labels-init` để tạo sẵn 9 category.
+  # Trạng thái agent là STATUS của Backlog (agent_assign, human_review_plan, human_approve…),
+  # đổi ngay ở khung comment. `e2ea labels-init` tạo sẵn 7 status — cần gói Starter trở lên và
+  # quyền admin project. Không được thì `category` (cách cũ: 9 category agent:*).
+  state_field: status              # status | category
+  assign: creator                  # tới lượt người thì gán cho người tạo ticket | none
 
 # CODE nằm ở đâu — tách hẳn khỏi tracker vì ticket và code là hai hệ khác nhau.
 forge:

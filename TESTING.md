@@ -60,7 +60,8 @@ e2ea up
 
 Để `up` chạy trong terminal này. Mở terminal khác cho các bước sau.
 
-**5. Tạo ticket trên Backlog**, gán category **`agent:try`**. Nội dung theo mục "Kịch bản
+**5. Tạo ticket trên Backlog**, chuyển status sang **`agent_assign`** (hồ sơ ở chế độ
+`state_field: category` thì gán category `agent:try`; bảng tên: [README](README.md#trạng-thái-trên-backlog)). Nội dung theo mục "Kịch bản
 mẫu → Bước 1": hiện tượng, tái hiện, tiêu chí nghiệm thu, phạm vi. Tối đa một phút sau,
 terminal `up` in `watch.handled … outcome=OK` và ticket sang `agent:plan-ready`.
 

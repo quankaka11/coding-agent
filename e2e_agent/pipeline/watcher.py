@@ -1,7 +1,7 @@
 """Tiến trình chạy liên tục: quét Backlog, chạy bước tương ứng, lặp lại.
 
 Đây là thứ biến các lệnh rời rạc thành một luồng tự động. Người chỉ còn chạm
-hai lần: viết ticket, và đổi category để duyệt plan.
+hai lần: giao ticket cho agent, và đổi trạng thái để duyệt plan.
 """
 from __future__ import annotations
 

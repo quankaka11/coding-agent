@@ -184,7 +184,7 @@ function ProbeResult({ result }: { result?: Probe | 'busy' }) {
   return (
     <span className={result.ok ? 'probe-result is-ok' : 'probe-result is-human'}>
       {result.detail}
-      {result.missing_labels?.length ? ` — thiếu ${result.missing_labels.length} category` : ''}
+      {result.missing_labels?.length ? ` — thiếu ${result.missing_labels.length} trạng thái agent (bấm Tạo nhãn)` : ''}
     </span>
   )
 }
@@ -287,7 +287,8 @@ function Build({ state, onChanged }: { state: State; onChanged: () => void }) {
         <button className="btn btn-quiet btn-small" disabled={working}
           onClick={async () => {
             try {
-              toast((await api.labelsInit()).detail, 'ok')
+              const res = await api.labelsInit()
+              toast(res.detail, res.ok ? 'ok' : 'human')
             } catch (err) {
               toast(humanError(err), 'human')
             }

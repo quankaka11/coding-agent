@@ -316,13 +316,14 @@ def cmd_up(args) -> int:
     if cmd_doctor(args) != 0:
         print(f"\nsửa {lay['profile']} rồi chạy lại", file=sys.stderr)
         return 2
-    print("== category trên tracker")
+    print("== trạng thái agent trên tracker (status/category)")
     cmd_labels_init(args)
     if lay["tracker"] is None or lay["forge"] is None:
         print("== CHẾ ĐỘ OFFLINE: ticket/MR ghi vào", lay["profile"].parent / "backlog")
     if args.once:
         return cmd_scan(args)
-    print(f"== watch mỗi {args.interval}s — Ctrl-C để dừng. Tạo ticket với category `{L.TRY}`.")
+    start = _tracker_words(args, f"`{L.TRY}`")
+    print(f"== watch mỗi {args.interval}s — Ctrl-C để dừng. Giao ticket cho agent bằng {start}.")
     return cmd_watch(args)
 
 
@@ -437,8 +438,18 @@ def cmd_tickets(args) -> int:
     return 0
 
 
+def _tracker_words(args, text: str) -> str:
+    """Tên trạng thái như người thấy trên tracker (`agent:try` → `agent_assign` ở chế độ status)."""
+    try:
+        prof = profile_mod.load(args.profile)
+        _, tracker = _orchestrator(args, prof, Path(args.repo).resolve())
+        return tracker.words(text) if hasattr(tracker, "words") else text
+    except Exception:
+        return text
+
+
 def cmd_labels_init(args) -> int:
-    """Tạo trước toàn bộ label trên GitLab (mục 1.1 của operations-guide)."""
+    """Tạo trước trạng thái agent trên tracker: label GitLab, status/category Backlog."""
     prof = profile_mod.load(args.profile)
     _, tracker = _orchestrator(args, prof, Path(args.repo).resolve())
     if not hasattr(tracker, "ensure_labels"):

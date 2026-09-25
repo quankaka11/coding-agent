@@ -14,7 +14,9 @@ def make(prof, base_dir: Path):
     if kind == "backlog":
         from .backlog import BacklogTracker
         return BacklogTracker(prof.tracker_cfg("space"), prof.tracker_cfg("project"),
-                              prof.tracker_cfg("api_key_env"), prof.tracker_cfg("issue_type_id"))
+                              prof.tracker_cfg("api_key_env"), prof.tracker_cfg("issue_type_id"),
+                              state_field=prof.tracker_cfg("state_field"),
+                              assign=prof.tracker_cfg("assign"))
     from .gitlab import GitLabTracker
     return GitLabTracker(prof.tracker_cfg("url"), prof.tracker_cfg("project"),
                          prof.tracker_cfg("token_env"))

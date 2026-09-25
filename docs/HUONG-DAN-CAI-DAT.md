@@ -23,8 +23,10 @@ Hai máy cùng quét **một project Backlog** sẽ nhận trùng ticket và m�
 - đang chạy `e2ea serve`: tắt vòng quét bằng nút ở thanh bên, hoặc Ctrl-C;
 - đang chạy Docker: `docker compose down`.
 
-Ticket nào còn ở `agent:running` sau khi dừng thì máy mới sẽ tự giao cho người
-(`agent:needs-human`) — đặt lại `agent:try` hoặc `agent:plan-approved` để chạy lại.
+Ticket nào còn ở `agent_working` sau khi dừng thì máy mới sẽ tự giao cho người
+(`human_needed`) — đặt lại `agent_assign` hoặc `human_approve` để chạy lại. (Hồ sơ dùng
+`tracker.state_field: category` thì tên tương ứng là `agent:running`, `agent:needs-human`,
+`agent:try`, `agent:plan-approved`.)
 
 ### 2. Chuẩn bị khoá
 
@@ -146,16 +148,20 @@ lại lệnh trên. Mang hồ sơ cũ sang thì chép các chỗ bạn từng s�
 > Làm được toàn bộ bước này bằng giao diện: tab **Cấu hình** → *Repo và hồ sơ* →
 > **Clone và sinh hồ sơ**.
 
-### A6. Tạo category trên Backlog
+### A6. Tạo status trạng thái agent trên Backlog
 
-Ticket phải gán được category `agent:try` thì vòng quét mới thấy. Tạo đủ 9 category
-`agent:*` một lần cho mỗi project (cần quyền quản trị project trên Backlog):
+Ticket phải chuyển được sang status `agent_assign` thì vòng quét mới thấy. Tạo đủ 7 status
+(`agent_*`, `human_*`) và 3 category kết cục một lần cho mỗi project — cần quyền admin project
+và gói Backlog **Starter trở lên**. Ý nghĩa từng status: [README → Trạng thái trên
+Backlog](../README.md#trạng-thái-trên-backlog).
 
 ```bash
 docker compose run --rm e2ea labels-init --profile /work/profiles/<tên>.yaml --repo /work/repos/<tên>
 ```
 
-(hoặc nút **Tạo nhãn** ở tab Cấu hình). Chạy lại không tạo trùng.
+(hoặc nút **Tạo nhãn** ở tab Cấu hình). Chạy lại không tạo trùng. Space không tạo được status
+tự đặt (gói Free, không có quyền admin) thì thêm `state_field: category` vào khối `tracker:` của
+hồ sơ rồi chạy lại lệnh trên — hệ thống dùng 9 category `agent:*` như bản cũ.
 
 ### A7. Chạy
 
@@ -243,10 +249,10 @@ cp ~/coding-agent/.env.example .env && chmod 600 .env
 nano .env
 
 e2ea init                  # clone + sinh profiles/<tên>.yaml — đọc ĐOÁN/TODO rồi sửa
-e2ea up                    # doctor → tạo category trên Backlog → vòng quét trong terminal
+e2ea up                    # doctor → tạo status trên Backlog → vòng quét trong terminal
 ```
 
-Chạy `e2ea up` ít nhất một lần để tạo category. Sau đó, muốn có giao diện thì thay bằng:
+Chạy `e2ea up` ít nhất một lần để tạo status trên Backlog. Sau đó, muốn có giao diện thì thay bằng:
 
 ```bash
 e2ea serve --watch         # giao diện http://127.0.0.1:8080 + vòng quét trong một tiến trình
@@ -266,7 +272,7 @@ sudo -iu e2ea                                 # các lệnh sau chạy dưới u
   claude auth login                           # claude đã cài toàn máy ở B1
   cp ~/coding-agent/.env.example /srv/e2ea/.env && chmod 600 /srv/e2ea/.env && nano /srv/e2ea/.env
   cd /srv/e2ea && ~/venv/bin/e2ea init        # đọc ĐOÁN/TODO trong profiles/<tên>.yaml
-  ~/venv/bin/e2ea up --once                   # doctor + tạo category, quét một vòng rồi thoát
+  ~/venv/bin/e2ea up --once                   # doctor + tạo status, quét một vòng rồi thoát
   exit
 sudo cp /home/e2ea/coding-agent/deploy/e2ea.service /etc/systemd/system/
 sudo systemctl edit --full e2ea               # ExecStart=/home/e2ea/venv/bin/e2ea serve --dir /srv/e2ea --watch
@@ -359,11 +365,13 @@ Những dòng cần thấy:
 | `check test` / `check lint` | ✅ và đúng lệnh bạn muốn |
 | `sandbox agent` | ✅ `bật (bubblewrap…)` — trong Docker là `chế độ nested (container)` |
 | `backlog: định dạng Markdown` | ✅ không có ⚠ |
+| `backlog: đủ status trạng thái agent` | ✅ `đủ` |
 
-Rồi chạy thử một ticket thật: tạo ticket nhỏ trên Backlog (vd sửa một hàm có test), gán
-category **`agent:try`**. Trong 1–2 phút ticket sang `agent:running`, vài phút sau là
-`agent:plan-ready` kèm comment plan. Duyệt (đổi `agent:plan-approved` hoặc bấm Duyệt trên
-giao diện) → vòng sau agent viết code → `agent:mr-created` kèm link MR.
+Rồi chạy thử một ticket thật: tạo ticket nhỏ trên Backlog (vd sửa một hàm có test), chuyển
+status sang **`agent_assign`**. Trong 1–2 phút ticket sang `agent_working`, vài phút sau là
+`human_review_plan` kèm comment plan, và được gán lại cho bạn. Duyệt (chọn `human_approve` ở
+khung comment, hoặc bấm Duyệt trên giao diện) → vòng sau agent viết code → `human_review_mr`
+kèm link MR.
 
 Muốn chắc bản cài không hỏng mà không tốn tiền Claude (chỉ cho cài trực tiếp):
 
@@ -390,4 +398,6 @@ cd coding-agent && python -m pytest tests -q        # 46 test, không gọi Clau
 | Mọi ticket `NO_MR/baseline_red` hoặc `ERROR … lệnh test không chạy được` | Môi trường test của repo đích chưa đúng (thiếu dependency, sai bản Python, thiếu toolchain trong ảnh Docker) | Chạy tay lệnh `commands.test` trong hồ sơ ngay trong `repos/<tên>`; Docker: thêm toolchain qua `EXTRA_APT` |
 | Hồ sơ mang từ máy cũ: lệnh test trỏ tới `/home/<ai-đó>/…/venvs/…` | Hồ sơ Python chứa đường dẫn tuyệt đối | Cất bản cũ, chạy `e2ea init --force`, chép lại các chỗ đã sửa tay |
 | Không mở được `http://…:8080` từ máy khác | Giao diện chỉ nghe localhost (cố ý) | Dùng SSH tunnel như [A8](#a8-mở-giao-diện-từ-máy-của-bạn) |
-| Không chọn được category `agent:try` trên Backlog | Chưa tạo category | Chạy `labels-init` như [A6](#a6-tạo-category-trên-backlog), hoặc `e2ea up` |
+| Không có status `agent_assign` trong dropdown Status | Chưa tạo status | Chạy `labels-init` như [A6](#a6-tạo-status-trạng-thái-agent-trên-backlog), hoặc `e2ea up` |
+| `labels-init` báo `không tạo được status …` | Gói Backlog không có status tự đặt, thiếu quyền admin, hoặc project đã đủ 8 status tự đặt | Nâng quyền/gói, xoá bớt status thừa, hoặc đặt `tracker.state_field: category` |
+| Vòng quét báo `project chưa có status …` mỗi chu kỳ | Hồ sơ ở chế độ status nhưng chưa tạo status | Chạy `labels-init` |

@@ -73,7 +73,7 @@ def doctor(root: Path) -> dict:
 
 
 def labels_init(root: Path) -> dict:
-    """Tạo các category trạng thái trên tracker. Chạy lại được, không đẻ trùng."""
+    """Tạo trạng thái agent trên tracker (status hoặc category). Chạy lại được, không đẻ trùng."""
     from ..config import profile as profile_mod
     from .. import tracker as tracker_mod
     ws = ws_mod.load(root)
@@ -81,7 +81,10 @@ def labels_init(root: Path) -> dict:
         return {"ok": False, "created": [], "detail": "chưa có hồ sơ repo"}
     prof = profile_mod.load(str(ws.layout["profile"]))
     tracker = tracker_mod.make(prof, ws.layout["profile"].parent)
-    created = tracker.ensure_labels(ALL_LABELS)
+    try:
+        created = tracker.ensure_labels(ALL_LABELS)
+    except Exception as exc:          # thiếu quyền admin / gói không có status tự đặt
+        return {"ok": False, "created": [], "detail": " ".join(str(exc).split())[:400]}
     return {"ok": True, "created": created,
-            "detail": f"đã tạo {len(created)} category mới" if created
-                      else "đủ 9 category, không phải tạo thêm"}
+            "detail": f"đã tạo {len(created)} mục mới: {', '.join(created)}" if created
+                      else "đủ trạng thái agent trên tracker, không phải tạo thêm"}

@@ -44,9 +44,16 @@ DEFAULT_LIMITS = {
 #: một lần chạy test. Dùng chung một số thì một mutant chậm nuốt trọn ngân sách.
 DEFAULT_MUTATION = {"enabled": False, "max_mutants": 20, "timeout_sec": 300,
                     "per_mutant_timeout_sec": 120, "min_kill_pct": 70}
+#: `state_field` (chỉ Backlog): trạng thái agent nằm ở **status** (mặc định — đổi ngay trong
+#: khung comment, một giá trị, hiện thành cột trên board) hay ở **category** (cách cũ, cho
+#: space không tạo được status tự đặt: gói Free, hoặc không có quyền admin project).
+#: `assign` (chỉ khi state_field=status): `creator` = tới lượt người thì gán ticket cho người
+#: tạo nó, tới lượt agent thì gán cho tài khoản agent — Backlog tự báo cho người được gán.
 DEFAULT_TRACKER = {"kind": "file", "root": "backlog", "url": "", "project": "",
                    "token_env": "GITLAB_TOKEN", "space": "", "api_key_env": "BACKLOG_API_KEY",
-                   "issue_type_id": None}
+                   "issue_type_id": None, "state_field": "status", "assign": "creator"}
+STATE_FIELDS = ("status", "category")
+ASSIGN_MODES = ("creator", "none")
 DEFAULT_FORGE = {"kind": "file", "root": "backlog", "url": "", "project": "",
                  "token_env": "GITLAB_TOKEN"}
 DEFAULT_NOTIFY = {"kind": "none", "url_env": "NOTIFY_WEBHOOK_URL", "events": None}
@@ -222,6 +229,10 @@ def _validate(p: Profile) -> None:
         errs.append("tracker gitlab cần cả url và project")
     if p.tracker_cfg("kind") == "backlog" and not (p.tracker_cfg("space") and p.tracker_cfg("project")):
         errs.append("tracker backlog cần cả space và project (projectKey hoặc id)")
+    if p.tracker_cfg("state_field") not in STATE_FIELDS:
+        errs.append(f"tracker.state_field phải thuộc {STATE_FIELDS}")
+    if p.tracker_cfg("assign") not in ASSIGN_MODES:
+        errs.append(f"tracker.assign phải thuộc {ASSIGN_MODES}")
     if p.forge_cfg("kind") not in ("file", "gitlab"):
         errs.append("forge.kind phải là file hoặc gitlab")
     if p.forge_cfg("kind") == "gitlab" and not (p.forge_cfg("url") and p.forge_cfg("project")):
@@ -296,16 +307,22 @@ def doctor(p: Profile, repo: Path, package_root: Path | None = None) -> list[tup
 
 
 def tracker_rows(p: Profile, base_dir: Path) -> list[tuple[str, bool, str]]:
-    """Soát tracker thật (có gọi mạng). Chỉ Backlog có điều cần soát: định dạng Markdown."""
+    """Soát tracker thật (có gọi mạng). Backlog: định dạng Markdown, đủ status/category."""
     if p.tracker_cfg("kind") != "backlog":
         return []
     from .. import tracker as tracker_mod
     try:
-        ok, note = tracker_mod.make(p, base_dir).formatting()
+        tr = tracker_mod.make(p, base_dir)
+        ok, note = tr.formatting()
+        missing = tr.missing_states()
     except Exception as exc:                       # token sai, mạng lỗi: nói ra, không đổ doctor
         return [("backlog đọc được", False, f"{type(exc).__name__}: {str(exc)[:200]}")]
+    field = p.tracker_cfg("state_field")
     # Không chặn: máy vẫn chạy đúng, chỉ là plan khó đọc — nhưng phải nói to.
-    return [("backlog: định dạng Markdown", True, note if ok else f"⚠ {note}")]
+    return [("backlog: định dạng Markdown", True, note if ok else f"⚠ {note}"),
+            # Thiếu status thì vòng quét báo lỗi mỗi chu kỳ và không nhận ticket nào.
+            (f"backlog: đủ {field} trạng thái agent", not missing,
+             "đủ" if not missing else f"thiếu {missing} — chạy `e2ea labels-init` (cần quyền admin project)")]
 
 
 def isolation_rows(p: Profile) -> list[tuple[str, bool, str]]:

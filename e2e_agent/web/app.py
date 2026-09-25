@@ -3,7 +3,7 @@
 Mặc định chỉ nghe 127.0.0.1: thư mục làm việc chứa .env với token GitLab và
 Backlog, không có lý do gì để nó nghe ra ngoài máy.
 
-Ranh giới của lớp này: nó đọc, nó ghi .env và hồ sơ, nó đổi category ticket.
+Ranh giới của lớp này: nó đọc, nó ghi .env và hồ sơ, nó đổi trạng thái ticket.
 Nó KHÔNG tự chạy pipeline — việc đó là của vòng quét, và chỉ có một vòng quét.
 """
 from __future__ import annotations

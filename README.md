@@ -48,8 +48,8 @@ agent_effort=high                # tuỳ chọn: low|medium|high|xhigh|max
 cd thu-muc-lam-viec && e2ea up
 ```
 
-`up` clone repo vào `repos/`, sinh `profiles/<tên>.yaml`, chạy `doctor`, tạo category trên
-Backlog rồi vào vòng `watch`. Cách sinh hồ sơ tuỳ ngôn ngữ:
+`up` clone repo vào `repos/`, sinh `profiles/<tên>.yaml`, chạy `doctor`, tạo status trạng thái
+agent trên Backlog rồi vào vòng `watch`. Cách sinh hồ sơ tuỳ ngôn ngữ:
 
 - **Python** (có `pyproject.toml`/`setup.py`/`requirements.txt`, hoặc chỉ có file `.py`):
   tất định — tạo venv riêng `venvs/<tên>`, cài dependency của repo cùng pytest, pytest-cov,
@@ -62,8 +62,9 @@ Backlog rồi vào vòng `watch`. Cách sinh hồ sơ tuỳ ngôn ngữ:
   chạy trong mỗi worktree mới (worktree không có sẵn `node_modules`…). G-6 và mutation chỉ
   soi được Python, ở repo khác ghi `out_of_scope`.
 
-Từ đó chỉ cần tạo ticket với category `agent:try` trên Backlog và đổi sang
-`agent:plan-approved` khi duyệt plan — agent viết code và mở MR **ngay trên ticket đó**.
+Từ đó chỉ cần chuyển ticket sang status `agent_assign` trên Backlog và chọn `human_approve`
+khi duyệt plan — agent viết code và mở MR **ngay trên ticket đó** (xem
+[Trạng thái trên Backlog](#trạng-thái-trên-backlog)).
 Hồ sơ sinh ra ghi rõ từng điều đã đoán ở đầu file; sửa tay xong thì `up` lần sau giữ
 nguyên. Thiếu hai dòng `backlog_*` hoặc `repo_url` là đường dẫn trên đĩa thì chạy offline:
 ticket và MR ghi vào `profiles/backlog/`. Mẫu `.env`: [.env.example](.env.example).
@@ -73,6 +74,33 @@ bỏ qua bước cài và dùng `python3` của máy.
 
 Hai việc còn phải làm tay: đăng nhập `claude` trên máy chạy `up`, và duyệt plan trên Backlog
 (bỏ được bằng `conventions.auto_approve`).
+
+## Trạng thái trên Backlog
+
+Mặc định (`tracker.state_field: status`) trạng thái agent là **status** của ticket. Người đổi
+status ngay ở khung comment cuối ticket: viết câu trả lời/lý do, chọn status, bấm **Submit**
+một lần. Board của Backlog chia cột theo status, nên nhìn là biết ticket đang ở lượt ai.
+
+| Status | Ai đặt | Nghĩa |
+|---|---|---|
+| `agent_assign` | người | Giao ticket cho agent. Cũng dùng để **chạy lại** sau khi trả lời câu hỏi của agent (viết câu trả lời vào comment, cùng lần Submit) |
+| `agent_working` | agent | Agent đang chạy — đừng đặt tay |
+| `human_review_plan` | agent | Plan nằm trong comment, chờ duyệt |
+| `human_approve` | người | Duyệt plan → agent viết code, mở MR |
+| `human_reject` | người | Từ chối plan — **ghi lý do trong comment cùng lần Submit**; agent lập plan khác |
+| `human_needed` | agent | Tới lượt người xem: agent hỏi lại, NO_MR, hoặc lỗi. Lý do ở comment; category `agent:no-mr` / `agent:needs-human` để lọc |
+| `human_review_mr` | agent | MR đã mở (category `agent:mr-created`), chờ review. Merge xong thì tự chuyển Resolved/Closed |
+
+- Bốn status mặc định (Open, In Progress, Resolved, Closed) để nguyên cho đội; agent chỉ đụng
+  ticket ở các status trên. Đang `agent_working` mà người kéo ticket sang status khác thì agent
+  chạy nốt nhưng **không ghi đè** lựa chọn đó.
+- Tới lượt người, agent gán ticket cho **người tạo ticket**; tới lượt agent thì gán cho tài khoản
+  agent — Backlog tự gửi thông báo. Tắt bằng `tracker.assign: none`. Nên cho agent một tài khoản
+  Backlog riêng (API key riêng): dùng chung tài khoản với người thì gán qua gán lại không báo ai.
+- Status tự đặt cần gói Backlog **Starter trở lên** và quyền admin project (tối đa 8 status tự
+  đặt; agent dùng 7). `e2ea labels-init` (hoặc nút **Tạo nhãn** ở tab Cấu hình) tạo sẵn;
+  `e2ea doctor` báo nếu còn thiếu. Space không tạo được status thì đặt
+  `tracker.state_field: category` để dùng cách cũ: 9 category `agent:*`, đổi trong form sửa ticket.
 
 ## Luồng, chế độ, chạy song song
 

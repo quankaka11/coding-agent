@@ -1,6 +1,6 @@
 """Ticket và hai quyết định của người: duyệt plan, và gán nhãn kết quả MR.
 
-Giao diện KHÔNG chạy pipeline. Duyệt plan chỉ là đổi category trên tracker —
+Giao diện KHÔNG chạy pipeline. Duyệt plan chỉ là đổi trạng thái trên tracker —
 đúng thứ vòng quét sau chờ để chạy Phase B ngay trên ticket đó. Hai bàn phím, một máy
 trạng thái, và tracker vẫn là nơi giữ sự thật.
 """

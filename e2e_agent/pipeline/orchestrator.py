@@ -1,4 +1,8 @@
-"""Vòng quét label. Mọi thứ diễn ra trên MỘT ticket — ticket người đã viết.
+"""Vòng quét trạng thái. Mọi thứ diễn ra trên MỘT ticket — ticket người đã viết.
+
+Tên dưới đây là trạng thái logic; tracker quyết định thể hiện nó ra sao (label GitLab,
+status hay category Backlog). Câu viết cho người đi qua `tracker.words()` để hiện đúng
+tên người thấy trên tracker.
 
 `agent:try`            → Phase A → `agent:plan-ready` (hoặc tự duyệt, xem auto_approve)
 `agent:plan-approved`  → Phase B ngay trên ticket đó → MR
@@ -42,6 +46,10 @@ DETAIL_MARK = "<!-- e2ea:detail -->"
 #: MR thứ hai cho cùng một plan khi ai đó đặt lại `agent:plan-approved`.
 MR_MARK = "<!-- e2ea:mr -->"
 AUTO_APPROVE_MARK = "<!-- e2ea:auto-approved -->"
+#: Comment thông báo "plan đã sẵn sàng". Trước đây nó được ghi KHÔNG có dấu agent, nên bị
+#: đọc như lời của người: agent coi nó là câu trả lời, và khi người từ chối plan mà không
+#: ghi lý do thì chính câu thông báo này thành "lý do từ chối".
+NOTICE_MARK = "<!-- e2ea:notice -->"
 #: `<!-- e2ea:running <epoch> <run_id> -->` — mốc để biết một run đã bắt đầu từ bao
 #: giờ. Không có mốc này thì `agent:running` là trạng thái không có đường ra: tiến
 #: trình bị kill là ticket nằm đó vĩnh viễn, và không ai phân biệt được "đang chạy"
@@ -74,6 +82,9 @@ class Orchestrator:
         self._inflight: dict[str, Future] = {}
         #: Lỗi ngoài RunContext của các run chạy trong thread — watcher đọc rồi ghi log.
         self.errors: list[str] = []
+        #: ticket → run đã đặt nó sang `agent:running`. Lúc run kết thúc, ticket phải còn ở
+        #: `agent:running`: người đã kéo nó đi chỗ khác giữa chừng thì không ghi đè lựa chọn đó.
+        self._running: dict[str, str] = {}
 
     # -- quét ------------------------------------------------------------
     def scan_once(self, wait: bool = True) -> list[tuple[str, str]]:
@@ -175,19 +186,20 @@ class Orchestrator:
             if started is None:
                 ctx.decide(Reason.NEEDS_HUMAN,
                            f"{ticket.id} ở `{L.RUNNING}` nhưng không có mốc bắt đầu run nào — "
-                           f"có thể do người đặt category tay, hoặc run của phiên bản cũ. "
+                           f"có thể do người đặt trạng thái này bằng tay, hoặc run của phiên bản cũ. "
                            f"Kiểm tra rồi đặt lại `{L.TRY}` (ticket gốc) hoặc `{L.IMPL}` (ticket chi tiết).",
                            kind=Kind.MISROUTED)
             age_min = round((time.time() - started[0]) / 60)
             ctx.decide(Reason.NEEDS_HUMAN, kind=Kind.STALE_RUN, why=
                        f"run `{started[1]}` bắt đầu {age_min} phút trước và chưa chốt kết cục "
                        f"(trần {self._stale_minutes():.0f} phút) — tiến trình nhiều khả năng đã bị "
-                       f"kill. Xem `runs/{ticket.id}/{started[1]}/`, rồi đặt lại category để chạy lại.",
+                       f"kill. Xem `runs/{ticket.id}/{started[1]}/`, rồi đặt lại `{L.TRY}` để chạy lại.",
                        stale_run=started[1], age_min=age_min)
         return ctx.outcome
 
     def _mark_running(self, ticket_id: str, run_id: str) -> None:
         self.tracker.set_state(ticket_id, L.RUNNING)
+        self._running[ticket_id] = run_id
         self._say(ticket_id, f"{RUNNING_MARK} {int(time.time())} {run_id} -->\n"
                              f"Agent bắt đầu xử lý (run `{run_id}`).")
 
@@ -265,23 +277,23 @@ class Orchestrator:
                 self._say(ticket.id, f"{AUTO_APPROVE_MARK}\nPlan loại `{spec.task_type}` được tự "
                                      f"duyệt theo hồ sơ repo (`conventions.auto_approve`). Agent "
                                      f"bắt đầu viết code ở vòng quét tới.")
-                self.tracker.set_state(ticket.id, L.PLAN_APPROVED)
+                self._release(ctx, ticket.id, L.PLAN_APPROVED)
                 ctx.decide(Reason.OK, "plan đã tự duyệt theo hồ sơ, chờ Phase B",
                            label=L.PLAN_APPROVED, base_sha=base_sha[:8], auto_approved=True)
-            self.tracker.set_state(ticket.id, L.PLAN_READY)
-            self.tracker.notify(ticket.id, _notice(ticket))
-            self._announce(ctx, PLAN_READY, "Plan chờ duyệt", ticket,
-                           f"**{ticket.title}**\n\nĐổi category sang `{L.PLAN_APPROVED}` để duyệt, "
-                           f"hoặc `{L.PLAN_REJECTED}` kèm comment lý do.\nChưa có dòng code nào được thay đổi.")
+            if self._release(ctx, ticket.id, L.PLAN_READY):
+                self.tracker.notify(ticket.id, self._words(f"{AGENT_MARK}\n{NOTICE_MARK}\n{_notice(ticket)}"))
+                self._announce(ctx, PLAN_READY, "Plan chờ duyệt", ticket,
+                               f"**{ticket.title}**\n\nChuyển sang `{L.PLAN_APPROVED}` để duyệt, "
+                               f"hoặc `{L.PLAN_REJECTED}` kèm comment lý do.\nChưa có dòng code nào được thay đổi.")
             ctx.decide(Reason.OK, "plan đã sẵn sàng, chờ người duyệt",
                        label=L.PLAN_READY, base_sha=base_sha[:8])
         return ctx.outcome
 
     # -- người duyệt xong ------------------------------------------------
     def approve(self, ticket: Ticket) -> str:
-        """Duyệt plan qua CLI: chỉ đổi category, vòng quét sau chạy Phase B.
+        """Duyệt plan qua CLI: chỉ đổi trạng thái, vòng quét sau chạy Phase B.
 
-        Cùng một đường với người đổi category trên Backlog hay bấm Duyệt trên web —
+        Cùng một đường với người đổi trạng thái trên Backlog hay bấm Duyệt trên web —
         không có đường tắt nào chạy Phase B mà bỏ qua kiểm tra của run_phase_b().
         """
         if handoff.unpack(self.tracker.comments(ticket.id)) is None:
@@ -290,9 +302,9 @@ class Orchestrator:
         return f"{ticket.id} → `{L.PLAN_APPROVED}`; Phase B chạy ở vòng quét tới"
 
     def reject(self, ticket: Ticket, why: str = "") -> Reason:
-        """Người từ chối plan — qua CLI (`why` truyền thẳng) hoặc qua category.
+        """Người từ chối plan — qua CLI (`why` truyền thẳng) hoặc qua tracker.
 
-        Đổi category rồi viết lý do vào comment là đường người thật sự dùng, nên
+        Đổi trạng thái kèm comment lý do là đường người thật sự dùng, nên
         nó phải khép kín: đếm số lần, đưa ticket về `agent:try` để agent lập plan
         mới có tính tới lý do, và chỉ dừng hẳn khi quá trần.
         """
@@ -330,7 +342,7 @@ class Orchestrator:
             elif packed is None:
                 ctx.decide(Reason.NEEDS_HUMAN,
                            f"{ticket.id} đang ở `{L.PLAN_APPROVED}`/`{L.IMPL}` nhưng agent chưa lập "
-                           f"plan nào cho ticket này — không có gì để duyệt. Đổi category sang "
+                           f"plan nào cho ticket này — không có gì để duyệt. Chuyển sang "
                            f"`{L.TRY}` để agent đọc ticket và lập plan trước.", kind=Kind.MISROUTED)
             else:
                 try:
@@ -392,15 +404,37 @@ class Orchestrator:
 
     def _say(self, ticket_id: str, body: str) -> None:
         """Mọi comment do agent ghi đều mang dấu, để phân biệt với lời của người."""
-        self.tracker.comment(ticket_id, f"{AGENT_MARK}\n{body}")
+        self.tracker.comment(ticket_id, self._words(f"{AGENT_MARK}\n{body}"))
+
+    def _words(self, text: str) -> str:
+        words = getattr(self.tracker, "words", None)
+        return words(text) if words else text
+
+    def _release(self, ctx: RunContext, ticket_id: str, label: str) -> bool:
+        """Trả ticket về trạng thái kế tiếp sau một run — trừ khi người đã đổi nó giữa chừng.
+
+        Run nào đặt `agent:running` thì lúc kết thúc ticket phải còn ở đó. Người kéo ticket
+        sang trạng thái khác trong lúc agent chạy (đóng nó, giao lại, tự làm…) là một quyết
+        định; ghi đè nó bằng kết cục của run là giẫm lên người.
+        """
+        if self._running.pop(ticket_id, None) is not None:
+            now = self.tracker.get(ticket_id).labels
+            if L.RUNNING not in now:
+                ctx.emit("tracker.state_kept", level="warn", wanted=label, now=now,
+                         note="người đã đổi trạng thái trong lúc agent chạy — không ghi đè")
+                self._say(ticket_id, f"Trạng thái ticket đã được đổi trong lúc agent chạy, nên agent "
+                                     f"không đặt `{label}` đè lên. Kết quả run vẫn ghi ở dưới.")
+                return False
+        self.tracker.set_state(ticket_id, label)
+        return True
 
     def _announce(self, ctx: RunContext, event: str, title: str, ticket: Ticket,
                   body: str, url: str = "") -> None:
         """Thông báo ra ngoài. Hỏng thì ghi log và đi tiếp — không làm đổ pipeline."""
         if event not in self.notify_events:
             return
-        sent = self.notifier.send(Notice(event=event, title=title, body=body,
-                                         url=url or ticket.url))
+        sent = self.notifier.send(Notice(event=event, title=self._words(title),
+                                         body=self._words(body), url=url or ticket.url))
         ctx.emit("notify.sent" if sent else "notify.skipped",
                  level="info" if sent else "debug", channel_event=event,
                  configured=getattr(self.notifier, "configured", False))
@@ -409,7 +443,7 @@ class Orchestrator:
         if not skip_label:
             # decide(label=…) ghi đè nhãn mặc định (vd plan lạc hậu → quay về agent:try).
             label = ctx.outcome_label or LABEL[ctx.outcome or Reason.ERROR]
-            self.tracker.set_state(ticket.id, label)
+            self._release(ctx, ticket.id, label)
             # Ticket gốc phải thấy được kết cục, nếu không nó kẹt ở agent:running mãi.
             if ticket.parent:
                 self.tracker.set_state(ticket.parent, ctx.parent_label or label)
@@ -466,7 +500,7 @@ def _mr_after_plan(comments: list[str]) -> bool:
 
 #: Comment máy của agent không mang thông tin cho lần chạy sau: mốc chạy, plan (đã có
 #: riêng), link ticket chi tiết/MR, thông báo tự duyệt.
-_MACHINE_ONLY = (RUNNING_MARK, handoff.OPEN, DETAIL_MARK, MR_MARK, AUTO_APPROVE_MARK)
+_MACHINE_ONLY = (RUNNING_MARK, handoff.OPEN, DETAIL_MARK, MR_MARK, AUTO_APPROVE_MARK, NOTICE_MARK)
 _LOG_LINE = re.compile(r"\n+Log: `[^`]*`\s*$")
 
 
@@ -485,7 +519,7 @@ def conversation(comments: list[str], since_last_plan: bool = False,
     for text in comments[start:]:
         text = (text or "").strip()
         if not text:
-            continue                 # Backlog ghi comment rỗng khi chỉ đổi category/trạng thái
+            continue                 # Backlog ghi comment rỗng khi chỉ đổi status/category
         if AGENT_MARK in text:
             if since_last_plan or any(m in text for m in _MACHINE_ONLY):
                 continue
@@ -507,8 +541,10 @@ def _tag(ctx: RunContext) -> str:
 
 
 def _last_human_comment(comments: list[str]) -> str:
+    """Comment gần nhất của người. Bỏ qua comment rỗng: Backlog tạo một comment rỗng mỗi
+    lần đổi status/category — kể cả lần agent tự đổi — nên "comment cuối" thường là nó."""
     for text in reversed(comments):
-        if AGENT_MARK not in text and handoff.OPEN not in text:
+        if (text or "").strip() and AGENT_MARK not in text and handoff.OPEN not in text:
             return text.strip()
     return ""
 
@@ -578,12 +614,13 @@ def _plan_comment(plan: str, spec, base_sha: str, prof: Profile | None = None) -
             f"- Loại task: `{spec.task_type}`\n- Phạm vi thay đổi: {modules}\n"
             f"- Base commit: `{base_sha[:12]}`\n\n"
             f"{blocks}---\n\n{plan}\n\n---\n\n"
-            f"**Phê duyệt:** đổi label sang `{L.PLAN_APPROVED}` — agent viết code và mở MR "
+            f"**Phê duyệt:** chuyển sang `{L.PLAN_APPROVED}` — agent viết code và mở MR "
             f"ngay trên ticket này.\n"
-            f"**Từ chối kế hoạch:** đổi label sang `{L.PLAN_REJECTED}` kèm comment lý do "
+            f"**Từ chối kế hoạch:** chuyển sang `{L.PLAN_REJECTED}` kèm comment lý do "
             f"(quá {MAX_REJECTS} lần từ chối thì ticket chuyển `{L.NO_MR}`).")
 
 
 def _notice(ticket: Ticket) -> str:
     return (f"@here Plan cho **{ticket.title}** đã sẵn sàng để duyệt. "
-            f"Xem comment ngay trên, đổi label để duyệt hoặc từ chối.")
+            f"Xem comment ngay trên: chuyển sang `{L.PLAN_APPROVED}` để duyệt, hoặc "
+            f"`{L.PLAN_REJECTED}` kèm lý do để từ chối.")

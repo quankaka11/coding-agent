@@ -55,8 +55,14 @@ def code(repo_url: str, token: str = "") -> dict:
                 project=project, forge_url=forge_url)
 
 
+def _state_field() -> str:
+    """Hồ sơ chưa có (đang cấu hình lần đầu) thì theo mặc định của hồ sơ mới."""
+    from ..config.profile import DEFAULT_TRACKER
+    return DEFAULT_TRACKER["state_field"]
+
+
 def tracker(space: str, project: str, api_key: str) -> dict:
-    """Đọc thử project và category. Chỉ đọc — không tạo category ở bước này."""
+    """Đọc thử project và trạng thái agent. Chỉ đọc — không tạo gì ở bước này."""
     space, project = (space or "").strip(), (project or "").strip()
     if not space and not project:
         return _yes("Để trống: ticket và MR ghi vào đĩa, chạy offline được ngay.", kind="file")
@@ -67,12 +73,12 @@ def tracker(space: str, project: str, api_key: str) -> dict:
 
     from ..tracker.backlog import BacklogTracker
     try:
-        tr = BacklogTracker(space, project, "backlog_api_key", api_key=api_key)
+        tr = BacklogTracker(space, project, "backlog_api_key", api_key=api_key,
+                            state_field=_state_field())
         info = tr.info
-        have = set(tr._category_ids())
+        missing = tr.missing_states(ALL_LABELS)
     except Exception as exc:
         return _no(_clean(exc))
-    missing = [name for name in ALL_LABELS if name not in have]
     md_ok, md_note = tr.formatting()
     return _yes(f"Đọc được dự án {info.get('projectKey') or project}"
                 + ("" if md_ok else f". ⚠ {md_note}"), kind="backlog",
