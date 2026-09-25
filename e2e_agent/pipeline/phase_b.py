@@ -159,7 +159,7 @@ def run(ctx: RunContext, prof: Profile, repo: Path, work: Path, ticket: Ticket,
         mr = _create_mr(ctx, prof, work, ticket, spec, plan, base, gate_report, ag,
                         evidence, forge, branch)
 
-    draft = bool(evidence["draft_reasons"])
+    draft = bool(evidence.get("draft_reasons"))
     ctx.decide(Reason.OK, f"MR{' (Draft)' if draft else ''} đã mở: {mr.url}", mr=mr.url,
                draft=draft, needs_review=ag["needs_review"])
     return {"mr": mr}
@@ -378,9 +378,11 @@ def _implement_loop(ctx: RunContext, prof: Profile, work: Path, spec, plan: str,
                        "mở rộng — việc đó cần plan mới.\n")
     if not evidence.get("test_freeze"):
         untested = ("\n## Không có test viết trước\n\nTask này KHÔNG có test đóng băng "
-                    f"({evidence.get('no_proof') or 'không có'}). Nếu thay đổi kiểm được bằng test "
-                    "tất định thì viết kèm test theo convention repo; không được thì thôi. Gate vẫn "
-                    "chạy toàn bộ test và lint sẵn có, và MR sẽ mở dạng Draft.\n")
+                    f"({evidence.get('no_proof') or 'không có'}). Thay đổi có hành vi chạy được "
+                    "(code) và kiểm được bằng test tất định thì viết kèm test theo convention repo. "
+                    "Thay đổi tài liệu/cấu hình/nội dung thì KHÔNG viết test đọc lại nội dung đó — "
+                    "người review thấy ngay trong diff. Gate vẫn chạy toàn bộ test và lint sẵn có, "
+                    "và MR sẽ mở dạng Draft.\n")
     for attempt in range(rounds + 1):
         prompt = (phase_a._skill("implement") + phase_a._spec_block(spec)
                   + f"\n## Plan đã được duyệt\n\n{plan}\n"
@@ -517,6 +519,23 @@ def _remediate(ctx: RunContext, prof: Profile, work: Path, spec, plan: str, base
                            feedback=_feedback(gate_report), rounds=1, tag=tag)
 
 
+def _docs_only(spec, work: Path, base, evidence: dict) -> None:
+    """T4 chỉ đổi tài liệu → không Draft vì thiếu test: với tài liệu, đọc diff CHÍNH LÀ kiểm.
+
+    "Thêm sơ đồ vào README" ra MR Draft chỉ vì "không có bằng chứng test" là bắt người review
+    bấm thêm một nút cho thứ không có test nào chứng minh được. Lý do Draft khác (luật bị hạ
+    mức sau các vòng tự sửa) vẫn giữ.
+    """
+    from ..config.autoprofile import DOC_PATHS
+    from ..config.profile import matches
+    changed = gitutil.changed_files(work, base.base_sha)
+    if spec.task_type != "T4" or not changed or any(matches(f, DOC_PATHS) is None for f in changed):
+        return
+    evidence["docs_only"] = True
+    evidence["draft_reasons"] = [r for r in evidence.get("draft_reasons", [])
+                                 if not r.startswith("không có bằng chứng test")]
+
+
 def _save_evidence(ctx: RunContext, evidence: dict) -> None:
     (ctx.run_dir / "evidence.json").write_text(
         json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -527,6 +546,7 @@ def _save_evidence(ctx: RunContext, evidence: dict) -> None:
 def _create_mr(ctx, prof, work, ticket, spec, plan, base, gate_report, ag, evidence,
                forge, branch):
     head = gitutil.head_sha(work)
+    _docs_only(spec, work, base, evidence)
     draft = bool(evidence.get("draft_reasons"))
     body = handoff.pack_task(
         _mr_body(ticket, spec, plan, base, gate_report, ag, evidence, head, ctx, work),
@@ -603,6 +623,9 @@ def _mr_body(ticket, spec, plan, base, gate_report, ag, evidence, head, ctx, wor
         draft_block = ("## Vì sao MR này là Draft\n\n"
                        + "\n".join(f"- {r}" for r in reasons)
                        + f"\n\nNgười review kiểm hành vi bằng tay rồi bỏ tiền tố `{DRAFT_PREFIX.strip()}`.\n\n")
+    if evidence.get("docs_only"):
+        draft_block += ("**Chỉ đổi tài liệu** — không có test nào chứng minh được nội dung tài liệu; "
+                        "người review đọc diff là đủ.\n\n")
     return re.sub(r"\n{3,}", "\n\n", (
         (f"{warning}\n\n" if warning else "")
         + draft_block
@@ -646,7 +669,7 @@ def _tests_line(gate_report: dict, base, ag: dict, evidence: dict) -> str:
     proved = [t.split("::")[-1] for t in
               ((ag["rules"].get("G-4") or {}).get("evidence") or {}).get("tests") or []]
     head = (f"**Test:** {added} test mới ({base.total} → {total})" if added > 0
-            else f"**Test:** {total} test")
+            else f"**Test:** không thêm test; {total} test sẵn có vẫn xanh")
     if proved:
         tail = ("; đỏ trên code cũ rồi xanh sau khi sửa: "
                 + ", ".join(f"`{t}`" for t in proved[:8]))

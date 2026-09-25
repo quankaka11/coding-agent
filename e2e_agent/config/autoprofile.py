@@ -26,6 +26,10 @@ _TEST_DIRS = ("tests", "test", "spec")
 #: kèm cờ review (G-11), strict thì G-11 chặn.
 _ALWAYS_FORBIDDEN = ["**/.gitlab-ci.yml", ".github/workflows/**", "ci/**",
                      "Dockerfile*", "docker-compose*", ".env*", "prompts/**"]
+#: Tài liệu luôn được sửa. "Thêm sơ đồ vào README" là việc cơ bản nhất người ta giao — cấm
+#: nó theo mặc định thì hệ thống nhận ticket, lập plan, người duyệt, rồi mới NO_MR ở G-3.
+#: Chốt chặn thật cho phạm vi là G-10 (chỉ đụng file plan đã duyệt), không phải danh sách hẹp.
+DOC_PATHS = ["README*", "CHANGELOG*", "CONTRIBUTING*", "**/*.md", "docs/**"]
 _PY_MANIFESTS = ("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile")
 _OTHER_MANIFESTS = ("package.json", "go.mod", "pom.xml", "build.gradle", "build.gradle.kts",
                     "Cargo.toml", "composer.json", "Gemfile", "mix.exs", "pubspec.yaml")
@@ -387,6 +391,7 @@ def generate(repo: Path, repo_id: str, tracker: dict | None = None, forge: dict 
     else:
         checks["coverage"] = {"status": "out_of_scope",
                               "reason": "chưa cài pytest-cov; cài rồi đổi thành available để G-7 chấm"}
+    allowed = _with_docs(allowed, notes)
     profile = _skeleton(repo_id, branch, allowed, forbidden, test_globs, commands, checks,
                         tracker, forge, notify, conventions={"ac_marker": "pytest.mark.ac"})
     _offline_note(tracker, notes)
@@ -459,10 +464,18 @@ def _generate_other(repo: Path, repo_id: str, tracker, forge, notify, suggest) -
     checks["lint"] = {"status": "available"}
     notes.append("G-6 (assert rỗng) và mutation chỉ soi được Python — ở repo này ghi out_of_scope; "
                  "G-8 tìm mã AC-x ngay trong file test")
+    allowed = _with_docs(allowed, notes)
     profile = _skeleton(repo_id, branch, allowed, forbidden, test_globs, commands, checks,
                         tracker, forge, notify, conventions={})
     _offline_note(tracker, notes)
     return Draft(profile=profile, notes=notes, todos=todos)
+
+
+def _with_docs(allowed: list[str], notes: list[str]) -> list[str]:
+    extra = [p for p in DOC_PATHS if p not in allowed]
+    if extra:
+        notes.append(f"allowed_paths thêm tài liệu: {', '.join(extra)}")
+    return list(allowed) + extra
 
 
 def _read(path: Path) -> str:

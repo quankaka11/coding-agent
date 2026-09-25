@@ -19,6 +19,10 @@ criteria và mục "Test sẽ viết" người đã duyệt. Cố ý — thấy 
   test không tồn tại.
 - T3: mỗi AC ít nhất một test. Python: `@pytest.mark.ac("AC-x")`; ngôn ngữ khác: ghi
   `AC-x` trong tên test hoặc comment ngay trên test.
+- **Không đổi tên, không đánh số lại, không sửa marker của test có sẵn** chỉ vì số AC trùng
+  với test của ticket trước. Số AC (`AC-1`, `AC-2`…) chỉ có nghĩa trong một ticket; file test
+  dùng chung nên hai ticket cùng có `AC-1` là bình thường. Đụng test cũ là lấn phạm vi và
+  làm người review phải đọc lại những test không liên quan tới ticket.
 
 Script tiền kiểm soi ngay sau lượt của bạn; không đạt thì bạn nhận lại lý do và được sửa
 — sau đó test đóng băng, bước sửa code không đổi được một dòng.

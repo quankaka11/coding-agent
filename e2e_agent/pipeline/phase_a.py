@@ -70,6 +70,14 @@ def run(ctx: RunContext, prof: Profile, repo: Path, ticket: Ticket, agent,
             # chứng test — người review MR là chốt chặn cho loại việc này.
             ctx.emit("intake.t4_relaxed", level="warn",
                      note="T4 ở chế độ relaxed: implement không có test viết trước, MR sẽ là Draft")
+        if spec.blocking(prof.relaxed) and spec.questions:
+            spec = _reconsider(ctx, agent, repo, spec, prompt)
+            spec.save(ctx.run_dir / "spec.yaml")
+        if bad := scope_violations(prof, spec.modules):
+            # Kiểm bằng script, trước khi tốn Discovery/Planning và trước khi người duyệt:
+            # plan đòi sửa file G-3 sẽ chặn thì duyệt xong cũng chỉ ra NO_MR ở Phase B.
+            ctx.decide(Reason.NEEDS_HUMAN, _scope_why(prof, bad), kind=Kind.SCOPE_POLICY,
+                       files=[f for f, _ in bad])
         if gaps := spec.soft_gaps(prof.relaxed):
             ctx.emit("intake.soft_gaps", level="warn", gaps=gaps,
                      note="relaxed: readiness chưa đạt nhưng không chặn — hiện cảnh báo trên plan")
@@ -143,6 +151,64 @@ def _parse_spec(ctx: RunContext, agent, repo: Path, result: AgentResult, ticket:
     spec.task_id = spec.task_id or ticket.id
     spec.source_ticket = spec.source_ticket or ticket.url or ticket.id
     return spec
+
+
+def scope_violations(prof: Profile, modules: list[str]) -> list[tuple[str, str]]:
+    """[(file, lý do)] cho mỗi mục trong scope.modules mà G-3 sẽ chặn."""
+    from ..config.profile import matches
+    out = []
+    for module in modules:
+        rel = str(module).strip().removeprefix("./").rstrip("/")
+        if not rel:
+            continue
+        if pattern := matches(rel, prof.forbidden_paths):
+            out.append((rel, f"thuộc `forbidden_paths` (khớp `{pattern}`)"))
+        elif not matches(rel, prof.allowed_paths):
+            out.append((rel, "ngoài `allowed_paths`"))
+    return out
+
+
+def _scope_why(prof: Profile, bad: list[tuple[str, str]]) -> str:
+    rows = "\n".join(f"- `{f}`: {why}" for f, why in bad)
+    return (f"{rows}\n\nNgười quản trị: thêm pattern vào `allowed_paths` (hoặc bỏ khỏi "
+            f"`forbidden_paths` nếu chắc chắn muốn cho agent sửa) — tab Cấu hình → Hồ sơ trên giao "
+            f"diện, hoặc `profiles/{prof.repo_id}.yaml`. allowed_paths hiện tại: "
+            f"{', '.join(f'`{p}`' for p in prof.allowed_paths)}.")
+
+
+def _reconsider(ctx: RunContext, agent, repo: Path, spec, prompt: str):
+    """Sắp dừng ticket để hỏi người → cho agent xét lại MỘT lần xem có tự chốt được không.
+
+    Mỗi câu hỏi là một vòng chờ người (vài giờ, có khi vài ngày) để trả lời thứ agent tự
+    quyết được: "sơ đồ dạng Mermaid hay ASCII", "đặt ở mục nào". Plan vẫn qua tay người
+    duyệt, nên một giả định hợp lý ghi rõ trên plan rẻ hơn nhiều một câu hỏi.
+    """
+    before = list(spec.questions)
+    qs = "\n".join(f"{i}. {q}" for i, q in enumerate(before, 1))
+    retry = _ask(ctx, agent, repo, "intake-reconsider", prompt + (
+        "\n\n## Xét lại trước khi hỏi người\n\n"
+        f"Bạn vừa định dừng ticket để hỏi người:\n\n{qs}\n\n"
+        f"Spec bạn vừa in:\n\n```yaml\n{spec.dumps()}```\n\n"
+        "Mỗi câu hỏi làm ticket chờ người thêm một vòng. Xét TỪNG câu:\n"
+        "- Có lựa chọn mặc định hợp lý (quy ước phổ biến, cách repo đang làm, cách hiểu hẹp "
+        "nhất) → TỰ CHỐT: ghi vào `assumptions` (người duyệt plan thấy và bác được), bỏ câu đó "
+        "khỏi `questions`. Định dạng, vị trí, tên gọi, mức chi tiết, cách trình bày đều thuộc loại này.\n"
+        "- Câu về `allowed_paths`, `forbidden_paths`, hồ sơ repo, CI, hay cách implement → BỎ "
+        "HẲN: người viết ticket không đổi được mấy thứ đó; hệ thống tự kiểm phạm vi. Ghi đúng "
+        "file ticket cần sửa vào `scope.modules`.\n"
+        "- Chỉ GIỮ câu mà chỉ người viết ticket mới biết (quy tắc nghiệp vụ, giá trị đúng, hành "
+        "vi mong đợi) VÀ đoán sai thì kết quả vô dụng.\n\n"
+        "Không còn câu nào thì đổi các mục readiness đã fail vì chúng về `pass`. In lại TOÀN BỘ "
+        "một khối ```yaml.\n"))
+    try:
+        new = spec_mod.parse(retry.text)
+    except spec_mod.SpecError as exc:
+        ctx.emit("intake.reconsider_failed", level="warn", error=str(exc)[:200])
+        return spec
+    new.task_id, new.source_ticket = spec.task_id, spec.source_ticket
+    ctx.emit("intake.reconsider", questions_before=len(before), questions_after=len(new.questions),
+             still_blocking=new.blocking(True), assumptions=len(new.assumptions))
+    return new
 
 
 def _ask_for_notes(ctx: RunContext, agent, repo: Path, spec, prompt: str):

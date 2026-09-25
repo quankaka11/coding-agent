@@ -14,9 +14,19 @@ spec, không dẫn số dòng code trừ khi đó là cách duy nhất chỉ ch�
 - Chỉ được đụng file nằm trong `allowed_paths` ghi ở dưới.
 - Tuyệt đối không đụng `forbidden_paths`. Task bắt buộc phải đụng thì nói thẳng là
   không làm được, đừng tìm đường vòng.
-- Spec liệt kê file ngoài `allowed_paths`, hoặc có AC không đạt được trong phạm vi cho
-  phép → ghi **một dòng** bắt đầu bằng `⚠` ngay đầu plan, trước mọi heading. Người duyệt
-  quyết; bạn không tự mở rộng và cũng không giải thích dài.
+- Có AC không đạt được trong phạm vi cho phép → ghi **một dòng** bắt đầu bằng `⚠` ngay
+  đầu plan, trước mọi heading. Người duyệt quyết; bạn không tự mở rộng và cũng không giải
+  thích dài. (Phạm vi file thì hệ thống đã kiểm trước khi tới bước này.)
+- **Task T4 (tài liệu, cấu hình, giao diện, prompt…): không viết test chỉ để đọc lại nội
+  dung vừa sửa** — test "README có khối mermaid" hay "file config có khoá X" không bắt được
+  lỗi nào người review không thấy ngay trong diff, mà thành thêm một file người phải đọc và
+  giữ. Mục `## Test sẽ viết` ghi đúng một dòng `- Không — T4, người review kiểm trong diff`,
+  trừ khi thay đổi có hành vi chạy được thật (vd code đọc file cấu hình đó).
+
+- **Không đổi tên, không đánh số lại, không sửa marker của test có sẵn** chỉ vì số AC trùng
+với test của ticket trước. Số AC (`AC-1`, `AC-2`…) chỉ có nghĩa trong một ticket; file test
+dùng chung nên hai ticket cùng có `AC-1` là bình thường. Đụng test cũ là lấn phạm vi và
+làm người review phải đọc lại những test không liên quan tới ticket.
 
 ## Lưu ý về mục "Test sẽ viết"
 

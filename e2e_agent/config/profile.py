@@ -174,9 +174,27 @@ def load(path: str | Path) -> Profile:
         raise ProfileError(f"{path}: khoá lạ {sorted(unknown)} — có thể gõ nhầm")
     if not raw.get("repo_id"):
         raise ProfileError(f"{path}: thiếu repo_id")
+    _drop_retired(raw, path)
     prof = Profile(**{k: v for k, v in raw.items() if k in _TOP}, source=path)
     _validate(prof)
     return prof
+
+
+#: Khoá từng có rồi bị bỏ. Gặp thì bỏ qua kèm cảnh báo, KHÔNG báo "khoá lạ": hồ sơ nằm trong
+#: repo đích (ci/repo-profile.yaml) và trên máy người dùng, không ai sửa kịp khi code đổi.
+#: Coi nó là lỗi cứng thì job `agent_gate` của MỌI MR đỏ trước cả khi kiểm gì — đã xảy ra
+#: thật với `same_file_edit_limit` từ bản 0.5.x. Gõ nhầm tên khoá thì vẫn là lỗi như cũ.
+RETIRED = {"limits": {"same_file_edit_limit"}}
+
+
+def _drop_retired(raw: dict, path: Path) -> None:
+    import sys
+    for section, keys in RETIRED.items():
+        block = raw.get(section)
+        if isinstance(block, dict) and (old := sorted(keys & set(block))):
+            for key in old:
+                block.pop(key)
+            print(f"⚠ {path}: bỏ qua khoá đã khai tử {section}.{', '.join(old)}", file=sys.stderr)
 
 
 def _validate(p: Profile) -> None:

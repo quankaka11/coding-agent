@@ -111,13 +111,10 @@ class Spec:
 
 def parse(text: str) -> Spec:
     """Đọc spec từ YAML thô, kiểm schema. Chấp nhận cả khối ```yaml."""
-    body = text.strip()
-    if "```" in body:
-        # Ưu tiên khối gắn nhãn yaml. Lấy bừa khối đầu tiên sẽ vớ phải ```python
-        # mà agent trích từ repro_steps của ticket.
-        blocks = body.split("```")[1::2]
-        tagged = [b[4:] for b in blocks if b.startswith("yaml")]
-        body = tagged[0] if tagged else (blocks[0] if blocks else body)
+    from ..core.parsers import fenced_block
+    # Ưu tiên khối gắn nhãn yaml (lấy bừa khối đầu sẽ vớ phải ```python trích từ ticket),
+    # và chỉ tính fence đầu dòng: AC hay viết "bắt đầu bằng ```mermaid" ngay trong câu.
+    body = fenced_block(text)
     try:
         raw = yaml.safe_load(body)
     except yaml.YAMLError as exc:

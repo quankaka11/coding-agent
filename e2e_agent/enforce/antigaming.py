@@ -152,6 +152,14 @@ def g4_fail_before_pass_after(c: Context) -> RuleResult:
     if no_proof := c.evidence.get("no_proof"):
         return RuleResult("G-4", NEEDS_REVIEW, f"không có bằng chứng fail-trước: {no_proof}",
                           {"no_proof": no_proof, **(ev or {})})
+    # T4 (tài liệu, cấu hình…) vốn không có test viết trước. CI dựng lại bằng chứng từ base
+    # nên không có `no_proof` của Phase B — trước đây nó báo FAIL cho chính MR mà run của
+    # agent kết luận needs_review. Loại task lấy từ spec người đã duyệt (plan có cảnh báo T4),
+    # và MR vẫn là Draft: không phải đường lách.
+    if c.task_type == "T4":
+        return RuleResult("G-4", NEEDS_REVIEW,
+                          "không có bằng chứng fail-trước: task T4 — không kiểm chứng được bằng test",
+                          {"no_proof": "task T4", **(ev or {})})
 
     if c.task_type == "T2":
         # T2 viết test cho code đã đúng nên không có "fail trước" — mutation là lưới duy nhất.

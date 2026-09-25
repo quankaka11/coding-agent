@@ -124,16 +124,17 @@ def _probe() -> tuple[str | None, str]:
                   "security_opt seccomp:unconfined và apparmor:unconfined")
 
 
-def agent_settings(prof, hook: str) -> dict:
+def agent_settings(prof, hook: str, private: list[Path] | tuple = ()) -> dict:
     """`.claude/settings.json` cho worktree: hook + luật deny + sandbox.
 
     Luật deny (Read/Edit) chạy ở MỌI máy nhưng chỉ chặn tool Read/Edit của agent. Sandbox
     chặn cả Bash (`cat ../../.env`, `curl` ra ngoài) ở mức OS — bật khi máy có.
+    `private`: thư mục của chính hệ thống (code luật chấm, hồ sơ, runs/) — xem `_private`.
     """
     from ..core.secrets import secret_files
     deny: list[str] = []
     abs_read: list[str] = []
-    for path in secret_files():
+    for path in [*secret_files(), *[p for p in private if p.exists()]]:
         is_dir = path.is_dir() or path.name == ".e2ea"
         pattern = f"//{path.as_posix().lstrip('/')}" + ("/**" if is_dir else "")
         deny += [f"Read({pattern})", f"Edit({pattern})"]
@@ -177,7 +178,8 @@ def install_guardrails(work: Path, profile_path: Path, package_root: Path | None
         prof = None
     claude_dir = work / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
-    settings = agent_settings(prof, hook_command(profile_path, package_root))
+    settings = agent_settings(prof, hook_command(profile_path, package_root),
+                              _private(profile_path, package_root, work))
     (claude_dir / "settings.json").write_text(json.dumps(settings, indent=2), encoding="utf-8")
 
     exclude = work / ".git" / "info" / "exclude"
@@ -191,6 +193,33 @@ def install_guardrails(work: Path, profile_path: Path, package_root: Path | None
     body = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
     if ".claude/" not in body:
         exclude.write_text(body + "\n.claude/\n", encoding="utf-8")
+
+
+def _private(profile_path: Path, package_root: Path | None, work: Path) -> list[Path]:
+    """Thứ agent không được đọc: code luật chấm, hồ sơ repo, biên bản các run.
+
+    Worktree nằm TRONG thư mục làm việc, nên trước đây agent chỉ cần `../../` là tới — run
+    thật đã có Discovery mở `e2e_agent/enforce/antigaming.py`. Luật chấm mà agent đọc được
+    thì nó tối ưu theo luật, không theo ticket (R-6). Không chặn `repos/`: `.git` của
+    worktree trỏ vào đó.
+    """
+    from ..hooks.forbidden_paths import _workspace
+    profile = Path(profile_path).resolve()
+    out: list[Path] = [profile.parent if profile.parent.name == "profiles" else profile,
+                       _workspace(profile) / "runs"]
+    if package_root is not None:
+        out.append(Path(package_root).resolve() / "e2e_agent")
+    work = Path(work).resolve()
+    # Không bao giờ chặn chỗ chứa chính worktree (hồ sơ đặt cạnh repo trong test/offline).
+    return [p for p in dict.fromkeys(out) if not _contains(p, work)]
+
+
+def _contains(root: Path, path: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def hook_command(profile_path: Path, package_root: Path | None = None) -> str:
@@ -256,11 +285,47 @@ def restore_files(work: Path, sha: str, files: list[str]) -> list[str]:
     return touched
 
 
+#: File mà sandbox của Claude Code (bubblewrap) che lại bằng cách mount đè lên — file chưa
+#: có thì nó TẠO một file rỗng làm điểm mount, và file đó ở lại trong worktree sau khi agent
+#: thoát. `git add -A` gom hết: run thật (AGENTCODING-30) đã commit 16 file rỗng như vậy,
+#: G-3/G-10 báo "ngoài phạm vi", agent không xoá được (sandbox tạo lại), ra NO_MR.
+#: Không loại theo tên bằng pathspec được — package.json thật thì vẫn phải commit — nên chỉ
+#: bỏ khi file RỖNG và CHƯA từng được track: package.json/lockfile/.npmrc rỗng không bao giờ
+#: là thay đổi thật.
+SANDBOX_PLACEHOLDERS = (
+    ".env", ".env.*", "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
+    "bun.lock", "bun.lockb", "bunfig.toml", ".npmrc", ".yarnrc", ".yarnrc.yml", ".gitmodules",
+    ".pnpmfile.cjs", ".mcp.json",
+)
+
+
+def drop_sandbox_placeholders(work: Path) -> list[str]:
+    """Xoá file rỗng, chưa track, trùng tên danh sách trên. Trả về các file đã xoá."""
+    import fnmatch
+    out = subprocess.run(["git", "ls-files", "--others", "-z"], cwd=work,
+                         capture_output=True, text=True).stdout
+    dropped = []
+    for rel in filter(None, out.split("\0")):
+        path = work / rel
+        name = Path(rel).name
+        if (any(fnmatch.fnmatch(name, pat) for pat in SANDBOX_PLACEHOLDERS)
+                and path.is_file() and not path.is_symlink() and path.stat().st_size == 0):
+            path.unlink(missing_ok=True)
+            dropped.append(rel)
+    return dropped
+
+
 def commit_all(work: Path, message: str) -> str:
+    drop_sandbox_placeholders(work)
     subprocess.run(["git", "add", "-A", "--", ".", *ARTEFACT_EXCLUDES],
                    cwd=work, capture_output=True, text=True, check=False)
-    subprocess.run(["git", "commit", "-m", message, "--allow-empty"],
-                   cwd=work, capture_output=True, text=True, check=False)
+    # Vòng sửa không đổi gì thì không commit: commit rỗng "fix: vòng 1-ag1" chỉ làm bẩn lịch
+    # sử MR. HEAD giữ nguyên nên mốc đóng băng/G-5 vẫn đúng như khi có commit rỗng.
+    staged = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=work,
+                            capture_output=True).returncode != 0
+    if staged:
+        subprocess.run(["git", "commit", "-m", message], cwd=work,
+                       capture_output=True, text=True, check=False)
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=work,
                           capture_output=True, text=True).stdout.strip()
 

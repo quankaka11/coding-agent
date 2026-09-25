@@ -44,6 +44,7 @@ class Kind(str, Enum):
     ANTIGAMING_EVIDENCE = "antigaming_evidence"  # G-4 thiếu bằng chứng / G-5 lệch commit
     MISROUTED = "misrouted"              # người đặt category sai
     PROFILE_GAP = "profile_gap"          # hồ sơ repo thiếu thứ loại task này cần
+    SCOPE_POLICY = "scope_policy"        # ticket cần sửa file hồ sơ không cho agent đụng
     BUDGET = "budget"                    # vượt trần thời gian/chi phí
     STALE_RUN = "stale_run"              # run đã chết mà chưa chốt kết cục
     # -- ERROR ----------------------------------------------------------------
@@ -62,7 +63,9 @@ EXPLAIN: dict[Reason, str] = {
 }
 
 EXPLAIN_KIND: dict[Kind, str] = {
-    Kind.NOT_READY: "Ticket chưa đạt Definition of Ready — viết rõ mục còn thiếu rồi đặt lại `agent:try`.",
+    Kind.NOT_READY: ("Agent cần bạn trả lời trước khi lập plan — chưa đụng dòng code nào. Trả lời các "
+                     "câu hỏi dưới đây ngay trong comment và chọn `agent:try` trong CÙNG lần Submit: "
+                     "agent đọc được câu trả lời, không hỏi lại."),
     Kind.T4: "Task không kiểm chứng được bằng test tất định (phụ thuộc output LLM, đổi prompt…).",
     Kind.PLAN_REJECTED: "Plan bị từ chối quá số lần cho phép — ticket cần viết lại cho rõ.",
     Kind.PLAN_STALE: ("Code trong phạm vi plan đã đổi trên nhánh gốc sau khi duyệt. Ticket "
@@ -84,6 +87,9 @@ EXPLAIN_KIND: dict[Kind, str] = {
     Kind.MISROUTED: ("Ticket bị đặt vào trạng thái dành cho ticket do agent sinh ra. Người chỉ nên đặt "
                      "`agent:try`; `agent:plan-approved`/`agent:plan-rejected` chỉ dùng trên ticket đã có plan."),
     Kind.PROFILE_GAP: "Hồ sơ repo thiếu thứ mà loại task này bắt buộc phải có để kết luận được.",
+    Kind.SCOPE_POLICY: ("Ticket cần sửa file mà hồ sơ repo không cho agent đụng. Đây là cấu hình của "
+                        "hệ thống: trả lời trong ticket không mở được — người quản trị sửa hồ sơ repo "
+                        "rồi đặt lại `agent:try`, không cần sửa ticket."),
     Kind.BUDGET: "Vượt trần thời gian hoặc chi phí của run.",
     Kind.STALE_RUN: "Run đã bắt đầu từ lâu mà chưa chốt kết cục — tiến trình nhiều khả năng đã bị kill.",
     Kind.SYSTEM: "Lỗi hệ thống.",
@@ -98,7 +104,17 @@ LABEL: dict[Reason, str] = {
 }
 
 
+#: Kind tự nói đủ: câu chung của Reason ("nhánh để lại cho người xem…") sai hoặc thừa ở đây —
+#: Phase A chưa có nhánh nào, và người đọc phải lướt qua nó mới tới câu hỏi.
+STANDALONE = {Kind.NOT_READY, Kind.SCOPE_POLICY}
+
+
 def explain(reason: Reason, kind: Kind | str | None = None) -> str:
+    try:
+        if kind and Kind(kind) in STANDALONE:
+            return EXPLAIN_KIND[Kind(kind)]
+    except ValueError:
+        pass
     text = EXPLAIN.get(reason, reason.value)
     if kind:
         try:

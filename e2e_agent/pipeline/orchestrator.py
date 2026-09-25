@@ -567,7 +567,8 @@ def _read_detail(ctx: RunContext, ticket: Ticket) -> tuple[spec_mod.Spec, str]:
         # promote() luôn ghi khối yaml vào body.
         ctx.decide(Reason.ERROR, "ticket chi tiết do agent sinh ra nhưng thiếu khối spec YAML "
                                  "— nhiều khả năng body bị sửa tay sau khi tạo")
-    spec_text = body.split("```yaml", 1)[1].split("```", 1)[0]
+    from ..core.parsers import fenced_block
+    spec_text = fenced_block(body)
     plan = body.split("## Plan đã duyệt", 1)[-1].strip()
     try:
         return spec_mod.parse(spec_text), plan

@@ -44,11 +44,8 @@ def suggest(repo: Path, agent, run_dir: Path) -> tuple[dict | None, str]:
 
 
 def parse(text: str) -> dict:
-    body = text.strip()
-    if "```" in body:
-        blocks = body.split("```")[1::2]
-        tagged = [b[4:] for b in blocks if b.startswith("yaml")]
-        body = tagged[0] if tagged else (blocks[0] if blocks else body)
+    from ..core.parsers import fenced_block
+    body = fenced_block(text)
     try:
         raw = yaml.safe_load(body)
     except yaml.YAMLError as exc:

@@ -7,6 +7,11 @@ pilot_type: infrastructure
 allowed_paths:
   - "src/**"
   - "tests/**"
+  # Tài liệu: sửa README/docs là việc cơ bản, G-10 (chỉ đụng file plan đã duyệt) vẫn canh.
+  - "README*"
+  - "CHANGELOG*"
+  - "**/*.md"
+  - "docs/**"
 forbidden_paths:
   - "prompts/**"
   - "pyproject.toml"

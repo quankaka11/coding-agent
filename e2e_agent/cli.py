@@ -198,8 +198,33 @@ def _layout(args) -> dict:
     # làm việc mà trộn run lại thì mọi tỉ lệ trong `e2ea metrics` đều sai.
     return {"root": root, "url": url, "name": name, "repo": root / "repos" / name,
             "profile": root / "profiles" / f"{name}.yaml", "forge": forge, "tracker": tracker,
-            "notify": notify, "runs": root / "runs" / name, "work": root / "work" / name,
+            "notify": notify, "runs": root / "runs" / name, "work": work_root(root) / name,
             "venv": root / "venvs" / name}
+
+
+#: File cấu hình mà pytest dò NGƯỢC lên thư mục cha để tìm. Repo đích không có cái nào thì
+#: pytest trong worktree vớ cái của thư mục chứa nó.
+_PYTEST_CONFIGS = ("pytest.ini", ".pytest.ini", "tox.ini", "setup.cfg", "pyproject.toml")
+
+
+def work_root(root: Path) -> Path:
+    """Chỗ đặt worktree của agent: `<thư mục làm việc>/work`, trừ khi phía trên có project.
+
+    Chạy thật với thư mục làm việc là chính repo e2ea: pytest trong worktree lấy
+    `pyproject.toml` của e2ea làm rootdir và cấu hình — JUnit ghi `work/agent-coding/…/tests/x.py`
+    thay vì `tests/x.py` (đối chiếu lỗi sẵn có trong phạm vi sai), marker/testpaths của e2ea
+    lọt sang repo đích, và máy agent chạy khác CI. Khi đó worktree ra `~/.cache/e2ea/work/`.
+    `E2EA_WORK_ROOT` đè được cả hai.
+    """
+    import hashlib
+    import os
+    if env := os.environ.get("E2EA_WORK_ROOT"):
+        return Path(env).expanduser().resolve()
+    root = Path(root).resolve()
+    if not any((d / f).is_file() for d in (root, *root.parents) for f in _PYTEST_CONFIGS):
+        return root / "work"
+    tag = hashlib.sha1(str(root).encode()).hexdigest()[:8]
+    return Path.home() / ".cache" / "e2ea" / "work" / f"{root.name}-{tag}"
 
 
 def _prepare_env(args, lay: dict) -> tuple[str, list[str]]:

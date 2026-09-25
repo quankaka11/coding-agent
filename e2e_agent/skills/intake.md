@@ -18,12 +18,33 @@ trả lời: điểm duyệt duy nhất của pipeline là plan, người sẽ �
    sát được, không theo file/dòng sẽ sửa — người duyệt bác được, còn agent viết test
    không bị mớm cách sửa.
 3. **Việc liên quan nhưng ticket không đòi → `out_of_scope`.** Implement bị cấm đụng.
-4. **`scope.modules` và AC chỉ gồm file trong `allowed_paths`** (mục "Ràng buộc đường
-   dẫn" bên dưới). Ticket đòi sửa file ngoài đó → `out_of_scope` kèm chú thích
-   `ngoài allowed_paths`; người duyệt sẽ quyết mở phạm vi hay tách ticket.
-5. Chỉ `fail` ở readiness khi **không cách hiểu nào dựng được test tất định**: ticket tự
-   mâu thuẫn, không chỉ ra hành vi quan sát được, hoặc đối tượng không tồn tại trong
-   repo. Mơ hồ về *mức độ* không phải lý do fail — đó là việc của `assumptions`.
+4. **`scope.modules` ghi đúng file ticket cần sửa** — kể cả khi nó nằm ngoài
+   `allowed_paths` hay trong `forbidden_paths`. Hệ thống tự đối chiếu với hồ sơ repo và
+   báo người quản trị; đó không phải việc của bạn, cũng không phải việc của người viết
+   ticket. **Không** đánh `fail` và **không** hỏi gì về `allowed_paths`, `forbidden_paths`,
+   hồ sơ repo hay CI: người viết ticket không đổi được mấy thứ đó.
+5. `clear`/`reproducible`/`scoped` chỉ `fail` khi **không dựng nổi một cách hiểu hợp lý
+   nào**: ticket tự mâu thuẫn, không nói muốn đạt kết quả gì, hoặc đối tượng không tồn
+   tại trong repo. Mơ hồ về *mức độ*, *định dạng*, *vị trí*, *tên gọi*, *cách trình bày*
+   không phải lý do fail — tự chọn phương án phổ biến nhất (hoặc theo cách repo đang làm)
+   và ghi vào `assumptions`. `deterministically_verifiable` fail thì chỉ là T4, không chặn.
+
+## Khi nào được hỏi
+
+Mỗi câu hỏi làm ticket chờ người thêm một vòng — có khi mất cả ngày cho một câu agent
+tự trả lời được. Plan đằng nào cũng qua tay người duyệt: **một giả định hợp lý ghi rõ
+trên plan luôn rẻ hơn một câu hỏi.** Chỉ hỏi khi CẢ HAI đúng:
+
+- câu trả lời chỉ người viết ticket biết (quy tắc nghiệp vụ, giá trị đúng, hành vi mong
+  đợi), không suy ra được từ ticket, từ code hay từ quy ước phổ biến; **và**
+- đoán sai thì kết quả vô dụng hoặc khó gỡ (xoá dữ liệu, đổi API công khai, sai con số).
+
+| Ticket | Đúng |
+|---|---|
+| "Thêm sơ đồ kiến trúc vào README" | `pass`; assumptions: sơ đồ Mermaid `flowchart` ở mục `## Kiến trúc` mới ngay sau phần giới thiệu, mức module/luồng chính |
+| "Đổi thông báo lỗi cho dễ hiểu hơn" | `pass`; assumptions: câu mới cụ thể, giữ nguyên mã lỗi |
+| "Sửa lỗi tính tổng giỏ hàng" (không nói sai thế nào) | tự tìm trong code/test chỗ sai rõ ràng; không thấy thì `clear: fail`, hỏi "Giỏ nào cho tổng sai, sai ra bao nhiêu?" |
+| "Giảm giá cho khách VIP" | `clear: fail`, hỏi mức giảm và cách nhận biết khách VIP — quy tắc nghiệp vụ, đoán là sai tiền |
 
 ## Phân loại
 
@@ -61,7 +82,7 @@ readiness:                                    # pass|fail từng mục
   ac_testable: pass                           # mỗi AC viết được thành một test
   modules_declared: pass                      # ticket ghi rõ module được đụng
 readiness_notes: {}     # BẮT BUỘC một dòng cho MỖI mục fail: '<mục>: <vướng ở đâu trong ticket>'
-questions: []           # chỉ khi có mục fail: câu người viết ticket trả lời được bằng một câu
+questions: []           # chỉ khi có mục fail VÀ đạt "Khi nào được hỏi": câu người viết ticket trả lời được bằng một câu
 ```
 
 Có mục `fail` vẫn in đủ YAML; hệ thống dừng và đưa `readiness_notes` + `questions` lên

@@ -6,6 +6,7 @@ coverage.json: định dạng của coverage.py.
 from __future__ import annotations
 
 import json
+import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -100,3 +101,18 @@ def coverage_json(path: Path) -> Coverage | None:
         cov.executed[name] = set(entry.get("executed_lines", []))
         cov.missing[name] = set(entry.get("missing_lines", []))
     return cov
+
+
+#: Fence chỉ tính khi đứng ĐẦU dòng. Spec/plan hay nhắc tới ```mermaid, ```python ngay trong
+#: câu chữ; cắt theo mọi ``` thì khối YAML bị chặt giữa chừng và agent phải viết lại.
+_FENCE = re.compile(r"^[ \t]*```[ \t]*([A-Za-z0-9_+-]*)[ \t]*\n(.*?)^[ \t]*```[ \t]*$",
+                    re.MULTILINE | re.DOTALL)
+
+
+def fenced_block(text: str, langs: tuple[str, ...] = ("yaml", "yml")) -> str:
+    """Nội dung khối ```yaml đầu tiên; không có thì khối fence đầu tiên; không có nữa thì cả text."""
+    blocks = [(m.group(1).lower(), m.group(2)) for m in _FENCE.finditer(text.strip() + "\n")]
+    for lang, body in blocks:
+        if lang in langs:
+            return body
+    return blocks[0][1] if blocks else text.strip()
