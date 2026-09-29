@@ -21,6 +21,7 @@ trong `evidence["draft_reasons"]`. Luật an toàn (G-1/G-2/G-3/G-5/G-9) không 
 """
 from __future__ import annotations
 
+import copy
 import json
 import re
 import textwrap
@@ -35,23 +36,48 @@ from ..enforce import antigaming, baseline as baseline_mod, gate as gate_mod, mu
 from ..forge.base import DRAFT_PREFIX, MR_LABEL
 from ..tracker.base import Ticket
 from . import handoff, phase_a, sandbox
+from .checkpoint import Checkpoint, Recorder
 
 
 def run(ctx: RunContext, prof: Profile, repo: Path, work: Path, ticket: Ticket,
         spec: spec_mod.Spec, plan: str, agent, forge, branch: str,
-        notes: list[str] | None = None) -> dict:
+        notes: list[str] | None = None, resume: Checkpoint | None = None,
+        rec: Recorder | None = None) -> dict:
     """`notes`: comment của người viết SAU khi duyệt plan (vd chỉ dẫn sau một lần
     NEEDS_HUMAN). Đi vào prompt implement và mô tả MR — không vào prompt viết test, vì
-    chỉ dẫn của người thường nói luôn cách sửa."""
+    chỉ dẫn của người thường nói luôn cách sửa.
+
+    `resume`: checkpoint của lần chạy trước (đã kiểm là dùng được). Worktree đã được dựng
+    tại đúng commit của nó; ở đây bỏ qua các bước đã xong. `rec` ghi checkpoint sau mỗi bước.
+    """
     ctx.phase = "B"
-    evidence: dict = {"self_fix": {"lint": False, "testgen_rounds": 0,
-                                   "implement_rounds": 0, "antigaming_rounds": 0},
-                      #: Mỗi dòng là một lý do MR phải là Draft. Rỗng = MR thường.
-                      "draft_reasons": [],
-                      "human_notes": list(notes or [])}
+    prev = resume
+    notes = list(notes or [])
+    if prev and prev.evidence:
+        evidence: dict = copy.deepcopy(prev.evidence)
+        # Luật mềm bị hạ mức là kết luận của lần chấm trước — chấm lại thì kết luận lại.
+        if softened := evidence.pop("softened", None):
+            evidence["draft_reasons"] = [r for r in evidence.get("draft_reasons", []) if r != softened]
+    else:
+        evidence = {"self_fix": {"lint": False, "testgen_rounds": 0,
+                                 "implement_rounds": 0, "antigaming_rounds": 0},
+                    #: Mỗi dòng là một lý do MR phải là Draft. Rỗng = MR thường.
+                    "draft_reasons": []}
+    evidence["human_notes"] = notes
+    #: Comment người viết SAU lần chạy trước — lý do để có thêm một vòng implement.
+    fresh = _new_notes(prev.notes if prev else None, notes)
+    evidence["new_notes"] = fresh
+    if rec is not None:
+        rec.bind(evidence)
+        rec.cp.notes = notes
+    done = rec.done if rec is not None else (lambda *a, **k: None)
     if notes:
-        ctx.emit("plan.human_notes", count=len(notes),
+        ctx.emit("plan.human_notes", count=len(notes), new=len(fresh),
                  note="comment của người sau khi duyệt plan — đưa vào prompt implement")
+    if prev:
+        ctx.emit("resume.start", from_run=prev.run_id, done=prev.stage, head=prev.head_sha[:8],
+                 next=prev.next_step(), new_notes=len(fresh),
+                 note="làm tiếp trên code của lần trước, bỏ qua các bước đã xong")
     is_t2 = spec.task_type == "T2"
     untested = spec.task_type == "T4"
     if untested and not prof.relaxed:
@@ -84,19 +110,90 @@ def run(ctx: RunContext, prof: Profile, repo: Path, work: Path, ticket: Ticket,
                            kind=Kind.PROFILE_GAP, command=prof.commands["setup"])
 
     with ctx.stage("baseline"):
-        base = baseline_mod.capture(ctx, prof, work, scope=spec.modules,
-                                    defer_lint=bool(prof.limit("baseline_lint_fix")))
+        if prev and prev.baseline:
+            # Baseline chụp trên code CHƯA sửa. Worktree lúc này đã mang code của agent,
+            # chụp lại ở đây là so code của agent với chính nó.
+            base = baseline_mod.Baseline(**prev.baseline)
+            base.save(ctx.run_dir / "baseline.json")
+            ctx.emit("resume.reuse", what="baseline", base=base.base_sha[:8])
+        else:
+            base = baseline_mod.capture(ctx, prof, work, scope=spec.modules,
+                                        defer_lint=bool(prof.limit("baseline_lint_fix")))
+            done("baseline", work, base=base)
 
     if base.lint == "fail":
         with ctx.stage("lint_fix"):
             _fix_baseline_lint(ctx, prof, work, spec, base, agent, evidence)
+        done("lint_fix", work, base=base)
 
-    if untested:
-        _no_proof(ctx, evidence, "task T4 — không kiểm chứng được bằng test viết trước")
+    if not (prev and prev.reached("test_first")):
+        if untested:
+            _no_proof(ctx, evidence, "task T4 — không kiểm chứng được bằng test viết trước")
+        else:
+            with ctx.stage("test_first"):
+                _test_first(ctx, prof, work, spec, plan, base, agent, evidence, is_t2)
+        done("test_first", work)
     else:
-        with ctx.stage("test_first"):
-            _test_first(ctx, prof, work, spec, plan, base, agent, evidence, is_t2)
+        ctx.emit("resume.reuse", what="test_first",
+                 frozen=((evidence.get("test_freeze") or {}).get("testfirst_sha") or "")[:8])
 
+    # Code, hồ sơ repo và comment của người đều y nguyên so với lần đã chấm → kết quả gate
+    # và anti-gaming cũ vẫn là kết quả đúng; chạy lại chỉ tốn thời gian (vd token hết hạn
+    # ở bước mở MR: sửa token xong là mở MR luôn).
+    reuse = bool(prev and prev.reached("verified") and not fresh and prev.gate_report
+                 and prev.ag and rec is not None and prev.profile_hash == rec.cp.profile_hash
+                 and prev.head_sha == gitutil.head_sha(work))
+    if reuse:
+        gate_report, ag = prev.gate_report, prev.ag
+        (ctx.run_dir / "gate-report.json").write_text(
+            json.dumps(gate_report, ensure_ascii=False, indent=2), encoding="utf-8")
+        (ctx.run_dir / "antigaming-report.json").write_text(
+            json.dumps(ag, ensure_ascii=False, indent=2), encoding="utf-8")
+        _save_evidence(ctx, evidence)
+        ctx.emit("resume.reuse", what="gate+antigaming", head=prev.head_sha[:8],
+                 note="code, hồ sơ repo và comment không đổi so với lần đã chấm")
+    else:
+        gate_report, ag = _check_and_fix(ctx, prof, work, spec, plan, base, agent, evidence,
+                                         is_t2, prev, fresh, done)
+
+    with ctx.stage("create_mr"):
+        try:
+            if prev and prev.mr:
+                mr = _update_mr(ctx, prof, work, ticket, spec, plan, base, gate_report, ag,
+                                evidence, forge, branch, prev.mr)
+            else:
+                mr = _create_mr(ctx, prof, work, ticket, spec, plan, base, gate_report, ag,
+                                evidence, forge, branch)
+        except (RuntimeError, OSError) as exc:
+            # GitLabError là RuntimeError; mất mạng là OSError. Code đã xong: không để lỗi
+            # này thành ERROR chung chung — lần sau chỉ phải thử lại đúng bước này.
+            ctx.decide(Reason.NEEDS_HUMAN, f"push/mở MR thất bại: {exc}", kind=Kind.MR_FAILED)
+    draft = bool(evidence.get("draft_reasons"))
+    done("mr", work, mr={"id": mr.id, "url": mr.url, "draft": draft})
+
+    ctx.decide(Reason.OK, f"MR{' (Draft)' if draft else ''} đã {'cập nhật' if prev and prev.mr else 'mở'}: "
+                          f"{mr.url}", mr=mr.url, draft=draft, needs_review=ag["needs_review"])
+    return {"mr": mr}
+
+
+def _new_notes(before: list[str] | None, now: list[str]) -> list[str]:
+    """Comment chưa có ở lần chạy trước. Lần đầu (before=None) thì không có gì là "mới"."""
+    if before is None:
+        return []
+    seen = list(before)
+    out = []
+    for note in now:
+        if note in seen:
+            seen.remove(note)
+        else:
+            out.append(note)
+    return out
+
+
+def _check_and_fix(ctx: RunContext, prof: Profile, work: Path, spec, plan: str, base, agent,
+                   evidence: dict, is_t2: bool, prev: Checkpoint | None, fresh: list[str],
+                   done) -> tuple[dict, dict]:
+    """Implement → gate → anti-gaming → (agent tự sửa). Trả về (gate_report, ag) đạt."""
     if is_t2:
         # Không có gì để sửa — chỉ cần chắc rằng test mới không làm hỏng gì.
         with ctx.stage("gate"):
@@ -107,9 +204,15 @@ def run(ctx: RunContext, prof: Profile, repo: Path, work: Path, ticket: Ticket,
                        kind=Kind.GATE_FAIL, failed_checks=gate_report["failed_checks"])
     else:
         with ctx.stage("implement"):
-            gate_report = _implement_loop(ctx, prof, work, spec, plan, base, agent, evidence)
+            if prev and prev.reached("implement") and not fresh:
+                gate_report = _gate_then_fix(ctx, prof, work, spec, plan, base, agent, evidence)
+            else:
+                # Lần đầu, hoặc làm tiếp mà có comment mới: agent làm trên code đang có
+                # (phiên Claude mới nhưng không phải trang trắng).
+                gate_report = _implement_loop(ctx, prof, work, spec, plan, base, agent, evidence)
             if fbpa := evidence.get("fail_before_pass_after"):
                 fbpa["passed_after"] = True
+    done("implement", work, gate_report=gate_report)
 
     # Gate xanh trên một nhánh không đổi gì vẫn là gate xanh — nhưng mở MR rỗng (hoặc chỉ
     # có test cho một ticket sửa code) thì vô nghĩa. T2 thì thay đổi chính là test.
@@ -136,8 +239,10 @@ def run(ctx: RunContext, prof: Profile, repo: Path, work: Path, ticket: Ticket,
 
     if ag["verdict"] == "FAIL" and not ag["blocking_rules"] and prof.relaxed:
         if softened := antigaming.soften(ag):
-            evidence["draft_reasons"].append(
-                f"{', '.join(softened)} chưa đạt sau {rounds} vòng agent tự sửa — hạ xuống cần review")
+            reason = (f"{', '.join(softened)} chưa đạt sau {rounds} vòng agent tự sửa — "
+                      f"hạ xuống cần review")
+            evidence["draft_reasons"].append(reason)
+            evidence["softened"] = reason
             _save_evidence(ctx, evidence)
             (ctx.run_dir / "antigaming-report.json").write_text(
                 json.dumps(ag, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -154,15 +259,20 @@ def run(ctx: RunContext, prof: Profile, repo: Path, work: Path, ticket: Ticket,
                    f"anti-gaming vẫn fail ({', '.join(ag['failed_rules'])}) sau {rounds} vòng "
                    f"agent tự sửa",
                    kind=Kind.ANTIGAMING, failed_rules=ag["failed_rules"], rounds=rounds)
+    done("verified", work, gate_report=gate_report, ag=ag)
+    return gate_report, ag
 
-    with ctx.stage("create_mr"):
-        mr = _create_mr(ctx, prof, work, ticket, spec, plan, base, gate_report, ag,
-                        evidence, forge, branch)
 
-    draft = bool(evidence.get("draft_reasons"))
-    ctx.decide(Reason.OK, f"MR{' (Draft)' if draft else ''} đã mở: {mr.url}", mr=mr.url,
-               draft=draft, needs_review=ag["needs_review"])
-    return {"mr": mr}
+def _gate_then_fix(ctx: RunContext, prof: Profile, work: Path, spec, plan: str, base, agent,
+                   evidence: dict) -> dict:
+    """Làm tiếp sau implement mà không có comment mới: gate trên HEAD, đỏ thì mới gọi agent."""
+    gate_report = gate_mod.run(ctx, prof, work, base)
+    _stop_if_flaky(ctx, gate_report)
+    if gate_report["verdict"] == "PASS":
+        ctx.emit("resume.reuse", what="implement", note="gate xanh trên code của lần trước")
+        return gate_report
+    return _implement_loop(ctx, prof, work, spec, plan, base, agent, evidence,
+                           feedback=_feedback(gate_report))
 
 
 def _no_proof(ctx: RunContext, evidence: dict, why: str) -> None:
@@ -376,8 +486,14 @@ def _implement_loop(ctx: RunContext, prof: Profile, work: Path, spec, plan: str,
                      + "\n\nLàm theo những điều này nếu chúng nằm trong phạm vi plan đã duyệt "
                        "(`scope.modules`). Cần đụng ngoài phạm vi thì nói rõ trong kết quả, đừng tự "
                        "mở rộng — việc đó cần plan mới.\n")
+    if fresh := evidence.get("new_notes"):
+        untested += ("\n## Comment MỚI kể từ lần chạy trước — việc chính của lượt này\n\n"
+                     + "\n\n".join(f"- {n}" for n in fresh)
+                     + "\n\nCode của lần chạy trước đã có sẵn trong thư mục (xem `git log`). Sửa "
+                       "tiếp trên đó theo các comment này, đừng viết lại từ đầu. Comment không đòi "
+                       "sửa gì (vd chỉ báo đã sửa cấu hình) thì không cần đổi code.\n")
     if not evidence.get("test_freeze"):
-        untested = ("\n## Không có test viết trước\n\nTask này KHÔNG có test đóng băng "
+        untested += ("\n## Không có test viết trước\n\nTask này KHÔNG có test đóng băng "
                     f"({evidence.get('no_proof') or 'không có'}). Thay đổi có hành vi chạy được "
                     "(code) và kiểm được bằng test tất định thì viết kèm test theo convention repo. "
                     "Thay đổi tài liệu/cấu hình/nội dung thì KHÔNG viết test đọc lại nội dung đó — "
@@ -556,6 +672,26 @@ def _create_mr(ctx, prof, work, ticket, spec, plan, base, gate_report, ag, evide
     mr = forge.create_mr(branch, prof.base_branch, f"[{spec.task_id or ticket.id}] {spec.title}",
                          body, [MR_LABEL], draft=draft)
     ctx.emit("mr.created", url=mr.url, branch=branch, head_sha=head[:8], draft=draft,
+             needs_review=ag["needs_review"])
+    return mr
+
+
+def _update_mr(ctx, prof, work, ticket, spec, plan, base, gate_report, ag, evidence,
+               forge, branch, prev_mr: dict):
+    """MR đã mở, người góp ý rồi chuyển ticket về cho agent: đẩy thêm commit lên CÙNG nhánh
+    (MR tự nhận commit mới) và thay mô tả bằng bằng chứng của lần chấm mới."""
+    head = gitutil.head_sha(work)
+    _docs_only(spec, work, base, evidence)
+    draft = bool(evidence.get("draft_reasons"))
+    body = handoff.pack_task(
+        _mr_body(ticket, spec, plan, base, gate_report, ag, evidence, head, ctx, work),
+        task_type=spec.task_type, modules=spec.modules, acceptance_ids=spec.ac_ids)
+    (ctx.run_dir / "mr-body.md").write_text(body, encoding="utf-8")
+    forge.push_branch(work, branch)
+    mr = forge.update_mr(str(prev_mr["id"]), f"[{spec.task_id or ticket.id}] {spec.title}",
+                         body, draft=draft)
+    mr.url = mr.url or prev_mr.get("url", "")
+    ctx.emit("mr.updated", url=mr.url, branch=branch, head_sha=head[:8], draft=draft,
              needs_review=ag["needs_review"])
     return mr
 

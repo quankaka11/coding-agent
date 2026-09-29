@@ -24,9 +24,11 @@ Hai máy cùng quét **một project Backlog** sẽ nhận trùng ticket và m�
 - đang chạy Docker: `docker compose down`.
 
 Ticket nào còn ở `agent_working` sau khi dừng thì máy mới sẽ tự giao cho người
-(`human_needed`) — đặt lại `agent_assign` hoặc `human_approve` để chạy lại. (Hồ sơ dùng
+(`human_needed`) — chuyển lại `agent_assign` là agent làm tiếp từ bước cuối cùng đã xong
+(checkpoint nằm trong `runs/` và ref `refs/e2ea/*` của repo — chuyển máy thì mang theo cả hai,
+không thì agent chạy lại phần viết code với plan đã duyệt). (Hồ sơ dùng
 `tracker.state_field: category` thì tên tương ứng là `agent:running`, `agent:needs-human`,
-`agent:try`, `agent:plan-approved`.)
+`agent:try`.)
 
 ### 2. Chuẩn bị khoá
 
@@ -150,10 +152,11 @@ lại lệnh trên. Mang hồ sơ cũ sang thì chép các chỗ bạn từng s�
 
 ### A6. Tạo status trạng thái agent trên Backlog
 
-Ticket phải chuyển được sang status `agent_assign` thì vòng quét mới thấy. Tạo đủ 7 status
-(`agent_*`, `human_*`) và 3 category kết cục một lần cho mỗi project — cần quyền admin project
-và gói Backlog **Starter trở lên**. Ý nghĩa từng status: [README → Trạng thái trên
-Backlog](../README.md#trạng-thái-trên-backlog).
+Ticket phải chuyển được sang status `agent_assign` thì vòng quét mới thấy. Tạo đủ 3 status
+(`agent_assign`, `agent_working`, `human_needed`) và 4 category kết cục một lần cho mỗi project —
+cần quyền admin project và gói Backlog **Starter trở lên**. Ý nghĩa từng status: [README →
+Trạng thái trên Backlog](../README.md#trạng-thái-trên-backlog). Project đã tạo 7 status của bản
+cũ thì cứ để: status cũ vẫn được đọc, hết ticket nằm ở đó thì xoá.
 
 ```bash
 docker compose run --rm e2ea labels-init --profile /work/profiles/<tên>.yaml --repo /work/repos/<tên>
@@ -161,7 +164,7 @@ docker compose run --rm e2ea labels-init --profile /work/profiles/<tên>.yaml --
 
 (hoặc nút **Tạo nhãn** ở tab Cấu hình). Chạy lại không tạo trùng. Space không tạo được status
 tự đặt (gói Free, không có quyền admin) thì thêm `state_field: category` vào khối `tracker:` của
-hồ sơ rồi chạy lại lệnh trên — hệ thống dùng 9 category `agent:*` như bản cũ.
+hồ sơ rồi chạy lại lệnh trên — hệ thống dùng category `agent:*` thay cho status.
 
 ### A7. Chạy
 
@@ -369,14 +372,14 @@ Những dòng cần thấy:
 
 Rồi chạy thử một ticket thật: tạo ticket nhỏ trên Backlog (vd sửa một hàm có test), chuyển
 status sang **`agent_assign`**. Trong 1–2 phút ticket sang `agent_working`, vài phút sau là
-`human_review_plan` kèm comment plan, và được gán lại cho bạn. Duyệt (chọn `human_approve` ở
-khung comment, hoặc bấm Duyệt trên giao diện) → vòng sau agent viết code → `human_review_mr`
-kèm link MR.
+`human_needed` kèm comment plan, và được gán lại cho bạn. Duyệt (chọn lại `agent_assign` ở
+khung comment, hoặc bấm Duyệt trên giao diện; muốn sửa plan thì viết góp ý cùng lần Submit)
+→ agent viết code → `human_needed` kèm link MR.
 
 Muốn chắc bản cài không hỏng mà không tốn tiền Claude (chỉ cho cài trực tiếp):
 
 ```bash
-cd coding-agent && python -m pytest tests -q        # 46 test, không gọi Claude, không cần mạng
+cd coding-agent && python -m pytest tests -q        # 56 test, không gọi Claude, không cần mạng
 ```
 
 ---

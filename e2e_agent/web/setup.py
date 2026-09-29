@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from ..tracker.base import ALL_LABELS
+from ..tracker.base import ACTIVE_LABELS
 from . import jobs, workspace as ws_mod
 
 
@@ -82,7 +82,7 @@ def labels_init(root: Path) -> dict:
     prof = profile_mod.load(str(ws.layout["profile"]))
     tracker = tracker_mod.make(prof, ws.layout["profile"].parent)
     try:
-        created = tracker.ensure_labels(ALL_LABELS)
+        created = tracker.ensure_labels(ACTIVE_LABELS)
     except Exception as exc:          # thiếu quyền admin / gói không có status tự đặt
         return {"ok": False, "created": [], "detail": " ".join(str(exc).split())[:400]}
     return {"ok": True, "created": created,

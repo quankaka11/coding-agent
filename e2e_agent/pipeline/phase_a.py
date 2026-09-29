@@ -32,14 +32,19 @@ PLAN_MAX_LINES = 60
 
 def run(ctx: RunContext, prof: Profile, repo: Path, ticket: Ticket, agent,
         rejections: list[str] | None = None,
-        talk: list[tuple[str, str]] | None = None) -> dict:
+        talk: list[tuple[str, str]] | None = None,
+        previous_plan: str | None = None) -> dict:
     """Trả về {spec, plan, discovery}. Tự decide() và thoát nếu không đi tiếp được.
 
     `rejections` là lý do người đã bác các plan trước. Không đưa vào prompt thì
     agent lập lại đúng cái plan vừa bị bác, và vòng từ chối thành vòng luẩn quẩn.
+    `previous_plan`: plan chưa duyệt mà người vừa góp ý (góp ý nằm trong `talk`) — sửa
+    plan đó theo góp ý, không lập một plan khác hẳn.
     """
     ctx.phase = "A"
-    rejected_block = _rejected_block(rejections)
+    rejected_block = _rejected_block(rejections) + _revise_block(previous_plan)
+    if previous_plan:
+        ctx.emit("planning.revise", note="sửa plan trước theo góp ý của người")
     if rejections:
         ctx.emit("planning.rejections", count=len(rejections))
     talk_block = _talk_block(talk)
@@ -247,6 +252,16 @@ def _rejected_block(rejections: list[str] | None) -> str:
             f"{lines}\n\nLập plan khác hẳn, đừng lặp lại hướng đã bị bác. "
             "Nếu lý do từ chối cho thấy ticket còn thiếu thông tin, hãy nói thẳng "
             "điều đó trong plan thay vì đoán.\n")
+
+
+def _revise_block(previous_plan: str | None) -> str:
+    if not previous_plan:
+        return ""
+    return ("\n## Plan trước — người đã góp ý (xem mục Trao đổi trên ticket)\n\n"
+            f"{previous_plan}\n\n"
+            "Sửa CHÍNH plan này theo góp ý MỚI NHẤT của người; phần người không nhắc tới thì giữ "
+            "nguyên. Góp ý đòi thêm file hay đổi loại task thì cứ làm theo — hệ thống sẽ tự đưa "
+            "plan lại cho người duyệt. Đừng mở rộng phạm vi khi góp ý không đòi.\n")
 
 
 def _talk_block(talk: list[tuple[str, str]] | None) -> str:

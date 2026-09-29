@@ -62,8 +62,8 @@ agent trên Backlog rồi vào vòng `watch`. Cách sinh hồ sơ tuỳ ngôn ng
   chạy trong mỗi worktree mới (worktree không có sẵn `node_modules`…). G-6 và mutation chỉ
   soi được Python, ở repo khác ghi `out_of_scope`.
 
-Từ đó chỉ cần chuyển ticket sang status `agent_assign` trên Backlog và chọn `human_approve`
-khi duyệt plan — agent viết code và mở MR **ngay trên ticket đó** (xem
+Từ đó chỉ cần chuyển ticket sang status `agent_assign` trên Backlog; plan xong thì duyệt bằng
+cách chuyển lại `agent_assign` — agent viết code và mở MR **ngay trên ticket đó** (xem
 [Trạng thái trên Backlog](#trạng-thái-trên-backlog)).
 Hồ sơ sinh ra ghi rõ từng điều đã đoán ở đầu file; sửa tay xong thì `up` lần sau giữ
 nguyên. Thiếu hai dòng `backlog_*` hoặc `repo_url` là đường dẫn trên đĩa thì chạy offline:
@@ -81,15 +81,30 @@ Mặc định (`tracker.state_field: status`) trạng thái agent là **status**
 status ngay ở khung comment cuối ticket: viết câu trả lời/lý do, chọn status, bấm **Submit**
 một lần. Board của Backlog chia cột theo status, nên nhìn là biết ticket đang ở lượt ai.
 
+Status chỉ nói **tới lượt ai**. Ba status tự đặt:
+
 | Status | Ai đặt | Nghĩa |
 |---|---|---|
-| `agent_assign` | người | Giao ticket cho agent. Cũng dùng để **chạy lại** sau khi trả lời câu hỏi của agent (viết câu trả lời vào comment, cùng lần Submit) |
+| `agent_assign` | người | **Tới lượt agent.** Người xong phần mình thì chuyển về đây, kèm comment nếu muốn — agent tự biết làm bước nào (bảng dưới) |
 | `agent_working` | agent | Agent đang chạy — đừng đặt tay |
-| `human_review_plan` | agent | Plan nằm trong comment, chờ duyệt |
-| `human_approve` | người | Duyệt plan → agent viết code, mở MR |
-| `human_reject` | người | Từ chối plan — **ghi lý do trong comment cùng lần Submit**; agent lập plan khác |
-| `human_needed` | agent | Tới lượt người xem: agent hỏi lại, NO_MR, hoặc lỗi. Lý do ở comment; category `agent:no-mr` / `agent:needs-human` để lọc |
-| `human_review_mr` | agent | MR đã mở (category `agent:mr-created`), chờ review. Merge xong thì tự chuyển Resolved/Closed |
+| `human_needed` | agent | **Tới lượt người**: plan chờ duyệt, agent hỏi lại, NO_MR, lỗi, hay MR chờ review. Lý do ở comment cuối (kèm dòng **Tiếp theo:** nói chuyển `agent_assign` thì agent làm gì); category `agent:plan-ready` / `agent:no-mr` / `agent:needs-human` / `agent:mr-created` để lọc |
+
+Xong việc thì chuyển Resolved/Closed như thường. Người chuyển `agent_assign` thì agent đọc lịch
+sử ticket để biết cú chuyển đó nghĩa là gì — không LLM, chỉ đọc dấu máy trong comment
+(`orchestrator.route()`):
+
+| Agent vừa để lại | Người làm | Agent làm |
+|---|---|---|
+| (chưa có gì) / câu hỏi | tạo ticket / trả lời trong comment rồi chuyển | lập plan (đọc cả câu trả lời) |
+| Plan chờ duyệt | chuyển, không comment | **duyệt** → viết code → MR |
+| Plan chờ duyệt | góp ý trong comment rồi chuyển | sửa plan theo góp ý. Không mở rộng phạm vi (không thêm file ngoài `scope.modules` cũ, không đổi loại task) thì tự duyệt và làm tiếp; có mở rộng thì đưa plan mới lại cho người duyệt |
+| Lỗi / NO_MR khi viết code | sửa nguyên nhân (token, hồ sơ…), comment nếu cần, rồi chuyển | **làm tiếp từ bước dừng** trên code đã có — không lập lại plan, không viết lại code (xem [Làm tiếp sau khi dừng](#làm-tiếp-sau-khi-dừng)) |
+| MR đã mở | góp ý trong comment rồi chuyển | sửa trên nhánh MR, đẩy thêm commit, cập nhật mô tả MR |
+| MR đã mở | chuyển, không comment | không có gì để làm, trả lại người |
+
+Muốn **từ chối hẳn** plan (lập plan khác, luôn đưa lại duyệt) thì dùng nút Từ chối trên giao
+diện hoặc `e2ea reject`. Plan lạc hậu (code trong phạm vi đổi trên nhánh gốc) thì agent tự lập
+plan mới.
 
 - Bốn status mặc định (Open, In Progress, Resolved, Closed) để nguyên cho đội; agent chỉ đụng
   ticket ở các status trên. Đang `agent_working` mà người kéo ticket sang status khác thì agent
@@ -98,18 +113,43 @@ một lần. Board của Backlog chia cột theo status, nên nhìn là biết t
   agent — Backlog tự gửi thông báo. Tắt bằng `tracker.assign: none`. Nên cho agent một tài khoản
   Backlog riêng (API key riêng): dùng chung tài khoản với người thì gán qua gán lại không báo ai.
 - Status tự đặt cần gói Backlog **Starter trở lên** và quyền admin project (tối đa 8 status tự
-  đặt; agent dùng 7). `e2ea labels-init` (hoặc nút **Tạo nhãn** ở tab Cấu hình) tạo sẵn;
+  đặt; agent dùng 3). `e2ea labels-init` (hoặc nút **Tạo nhãn** ở tab Cấu hình) tạo sẵn;
   `e2ea doctor` báo nếu còn thiếu. Space không tạo được status thì đặt
-  `tracker.state_field: category` để dùng cách cũ: 9 category `agent:*`, đổi trong form sửa ticket.
+  `tracker.state_field: category` để dùng category `agent:*`, đổi trong form sửa ticket
+  (`agent:try` là lượt agent, như `agent_assign`).
+- **Nâng từ bản 7 status:** các status cũ `human_review_plan`, `human_approve`, `human_reject`,
+  `human_review_mr` vẫn được đọc để ticket đang nằm đó không kẹt (`human_approve` vẫn là duyệt),
+  nhưng hệ thống không đặt chúng nữa. Hết ticket ở đó thì xoá trên Backlog.
 
 ## Luồng, chế độ, chạy song song
 
 **Một ticket từ đầu tới MR.** `agent:try` → Phase A (đọc ticket, soi repo, lập plan) →
-`agent:plan-ready` → người đổi `agent:plan-approved` → Phase B chạy ngay trên ticket đó →
-`agent:mr-created`, kèm comment link MR trên ticket. Không còn ticket `[impl]` con: plan và
-spec người đã duyệt nằm sẵn trong comment bàn giao của chính ticket. Đặt lại
-`agent:plan-approved` trên plan đã ra MR không mở MR thứ hai. (Ticket `[impl]` của phiên bản
-cũ vẫn chạy được.)
+`agent:plan-ready` → người chuyển lại `agent:try` (= duyệt) → Phase B chạy ngay trên ticket đó
+→ `agent:mr-created`, kèm comment link MR trên ticket. Không còn ticket `[impl]` con: plan và
+spec người đã duyệt nằm sẵn trong comment bàn giao của chính ticket. Chuyển `agent:try` trên
+plan đã ra MR mà không góp ý thì không mở MR thứ hai. (Ticket `[impl]` và trạng thái
+`agent:plan-approved` của phiên bản cũ vẫn chạy được.)
+
+### Làm tiếp sau khi dừng
+
+Phase B ghi **checkpoint** sau mỗi bước (`runs/<ticket>/checkpoint.json`, commit giữ bằng ref
+`refs/e2ea/<ticket>` nên `e2ea clean` không làm mất). Run dừng giữa chừng — token hết hạn lúc
+mở MR, gate fail, hết ngân sách, tiến trình bị kill — thì người sửa nguyên nhân rồi chuyển
+`agent:try`: agent dựng lại worktree tại đúng commit cũ, cùng nhánh, và:
+
+- bỏ qua bước đã xong (baseline, sửa lint, viết test — mốc đóng băng G-9 giữ nguyên);
+- bước dùng LLM (implement) làm tiếp **trên code đã có**; comment mới của người sau lần dừng
+  → thêm một vòng implement theo comment đó;
+- gate và anti-gaming luôn chạy lại, trừ khi code, hồ sơ repo và comment đều y nguyên so với
+  lần đã chấm — vd token hết hạn lúc mở MR: sửa token, chuyển `agent:try` là mở MR luôn,
+  không gọi agent lần nào.
+
+Không làm tiếp được thì chạy lại Phase B từ đầu **với plan đã duyệt** (không lập lại plan):
+plan/spec đã đổi, commit cũ không còn, hoặc lần trước dừng vì anti-gaming chặn cứng (bằng
+chứng không còn tin được). Trước Phase B có **preflight** kiểm token GitLab (còn hạn, đủ quyền
+Developer) — hỏng thì dừng trước khi tốn tiền cho agent (`NEEDS_HUMAN/forge_auth`). Token và
+hồ sơ repo được đọc lại mỗi vòng quét: sửa trên giao diện hay `.env` là có hiệu lực, không phải
+khởi động lại (đổi URL/project của tracker, forge hay model của agent thì vẫn cần).
 
 **Chế độ** — `conventions.mode` trong hồ sơ:
 
@@ -226,11 +266,11 @@ Hai việc vẫn phải làm ngoài giao diện: đăng nhập `claude` trên m�
 - **Duyệt plan ngay tại đây.** Trang plan đưa lên trước những thứ gật nhầm là tốn cả
   run: giả định agent tự chốt, phần cố ý không làm, phạm vi file được sửa (G-10), điều
   kiện nghiệm thu — rồi mới tới `plan.md`.
-  - *Duyệt* chỉ đổi category sang `agent:plan-approved`; vòng quét sau chạy Phase B ngay
-    trên ticket đó.
-  - *Từ chối* bắt buộc có lý do. Lý do ghi thành comment **trước** khi đổi nhãn, vì
-    `reject()` đọc nó bằng `_last_human_comment()`. Màn hình đếm số lần đã từ chối so với
-    trần `MAX_REJECTS`.
+  - *Duyệt* ghi dấu duyệt lên ticket rồi chuyển `agent:try`; vòng quét sau chạy Phase B
+    ngay trên ticket đó.
+  - *Từ chối* bắt buộc có lý do; plan mới luôn đưa lại duyệt (khác góp ý qua comment, vốn
+    được tự duyệt nếu không mở rộng phạm vi). Màn hình đếm số lần đã từ chối so với trần
+    `MAX_REJECTS`.
 - Run nổi bật (đang chạy → mất tín hiệu → gần nhất), tiến độ đẩy qua SSE.
 - Các dòng `TODO` còn lại trong hồ sơ, và tình trạng vòng quét.
 
@@ -394,7 +434,7 @@ dạng `NO_MR/plan_stale`), không phải một trạng thái riêng.
 |---|---|---|---|
 | `OK` | `agent:mr-created` | review MR (MR `Draft:` — kiểm hành vi bằng tay, lý do ở đầu mô tả MR) | — |
 | `NO_MR` | `agent:no-mr` | không gì ngay; agent đã thử và nói rõ vì sao. Với `not_ready`, comment ticket liệt kê từng mục chưa đạt kèm lý do và **câu hỏi cần trả lời** (`readiness_notes`, `questions` trong spec) — trả lời ngay trong ticket rồi đặt lại `agent:try` | `not_ready`, `t4`, `plan_rejected`, `plan_stale` (ticket tự về `agent:try`), `baseline_red`, `testgen_broken`, `test_passes_pre`, `t2_red`, `gate_fail`, `loop_limit`, `antigaming`, `no_change` |
-| `NEEDS_HUMAN` | `agent:needs-human` | **phải quyết**: bằng chứng không còn tin được hoặc cấu hình/thao tác của người sai | `flaky`, `antigaming_evidence`, `misrouted`, `profile_gap`, `budget`, `stale_run` |
+| `NEEDS_HUMAN` | `agent:needs-human` | **phải quyết**: bằng chứng không còn tin được hoặc cấu hình/thao tác của người sai. Sửa xong chuyển `agent:try` là agent làm tiếp | `flaky`, `antigaming_evidence`, `misrouted`, `profile_gap`, `budget`, `stale_run`, `forge_auth` (preflight: token hỏng), `mr_failed` (code xong, push/mở MR hỏng) |
 | `ERROR` | `agent:needs-human` | xem log | `system` |
 
 Những chỗ trước đây dừng chờ người nay quay vòng cho agent trong cùng run (số lượt
@@ -426,8 +466,9 @@ Tắt được bằng `conventions.enforce_plan_scope: false` nếu Intake hay k
 Chúng không biết gì về nhau: `tracker` không có khái niệm nhánh/MR, `forge` không có
 khái niệm ticket. Gộp lại là lỗi thiết kế đã phải sửa một lần.
 
-Backlog không có label tự do như GitLab, nên 9 trạng thái agent map sang **category** —
-`e2ea labels-init` tạo sẵn.
+Backlog không có label tự do như GitLab, nên trạng thái agent map sang **status** (3 status,
+xem [Trạng thái trên Backlog](#trạng-thái-trên-backlog)) hoặc **category** — `e2ea labels-init`
+tạo sẵn.
 
 ## Hồ sơ repo
 

@@ -32,6 +32,21 @@ def create(repo: Path, work_root: Path, branch: str, base: str) -> Path:
     return _assert_worktree(work)
 
 
+def create_at(repo: Path, work_root: Path, branch: str, sha: str) -> Path:
+    """Dựng lại worktree của một lần chạy trước: đúng nhánh, đúng commit đã ghi checkpoint.
+
+    Luôn dựng MỚI, không dùng lại thư mục cũ dù còn: file dở dang của một lượt agent bị
+    ngắt (chưa commit, chưa ai kiểm) không được lọt sang lần chạy sau.
+    """
+    work = under(repo, work_root) / branch.replace("/", "_")
+    if work.exists():
+        remove(repo, work)
+    subprocess.run(["git", "worktree", "prune"], cwd=repo, capture_output=True, check=False)
+    subprocess.run(["git", "worktree", "add", "-f", "-B", branch, str(work), sha],
+                   cwd=repo, capture_output=True, text=True, check=True)
+    return _assert_worktree(work)
+
+
 def create_detached(repo: Path, work: Path, sha: str) -> Path:
     """Worktree tách rời tại một commit — dùng để dựng lại baseline, không đẻ nhánh."""
     work = work.resolve()

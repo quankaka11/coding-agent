@@ -480,7 +480,7 @@ def cmd_labels_init(args) -> int:
     if not hasattr(tracker, "ensure_labels"):
         print("backend file không cần tạo label trước")
         return 0
-    created = tracker.ensure_labels(L.ALL_LABELS)
+    created = tracker.ensure_labels(L.ACTIVE_LABELS)
     print(f"đã tạo {len(created)}: {created}" if created else "đủ rồi")
     print("tracker:", tracker.whoami())
     return 0

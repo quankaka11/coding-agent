@@ -68,6 +68,8 @@ class RunContext:
         #: ticket chi tiết. Dùng khi kết cục đòi ticket gốc đi đường khác (plan lạc
         #: hậu → gốc quay về `agent:try` để agent lập plan lại).
         self.parent_label: str | None = None
+        #: Câu nói cho người: chuyển `agent:try` thì agent làm gì tiếp (Phase B điền từ checkpoint).
+        self.resume_hint: str = ""
         self._finish_hooks: list[Callable[["RunContext"], None]] = []
 
     # -- sự kiện ---------------------------------------------------------

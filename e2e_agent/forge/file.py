@@ -31,3 +31,15 @@ class FileForge:
             path.write_text(f"# {title}\n\n`{source_branch}` → `{target_branch}` · labels: "
                             f"{', '.join(labels)}\n\n{body}\n", encoding="utf-8")
         return MergeRequest(id=f"mr-{n:03d}", url=str(path), source_branch=source_branch)
+
+    def update_mr(self, mr_id: str, title: str, body: str, draft: bool = False) -> MergeRequest:
+        if draft and not title.startswith(DRAFT_PREFIX):
+            title = DRAFT_PREFIX + title
+        path = self.root / "mrs" / f"{mr_id}.md"
+        head = path.read_text(encoding="utf-8").splitlines()[2] if path.is_file() else ""
+        path.write_text(f"# {title}\n\n{head}\n\n{body}\n", encoding="utf-8")
+        return MergeRequest(id=mr_id, url=str(path), source_branch="")
+
+    def check(self) -> list[str]:
+        """Không có token nào để hết hạn."""
+        return []

@@ -23,10 +23,15 @@ class GitLabTracker:
         self.url = url.rstrip("/")
         self.project = urllib.parse.quote(str(project), safe="")
         self.timeout = timeout
-        self.token = read_secret(token_env)
+        self.token_env = token_env
         if not self.token:
             raise GitLabError(f"thiếu token: đặt biến môi trường {token_env} hoặc dòng "
                               f"{token_env.lower()}=… trong .env")
+
+    @property
+    def token(self) -> str:
+        """Đọc lại mỗi lần: sửa token trong .env có hiệu lực ngay, không phải khởi động lại."""
+        return read_secret(self.token_env)
 
     # -- REST ------------------------------------------------------------
     def _call(self, method: str, path: str, body: dict | None = None):

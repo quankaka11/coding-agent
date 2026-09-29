@@ -17,6 +17,11 @@ NEEDS_HUMAN = "agent:needs-human"
 
 ALL_LABELS = [TRY, RUNNING, PLAN_READY, PLAN_APPROVED, PLAN_REJECTED, IMPL,
               MR_CREATED, NO_MR, NEEDS_HUMAN]
+#: Trạng thái của phiên bản cũ: vẫn ĐỌC được (ticket đang nằm đó không kẹt) nhưng hệ thống không
+#: đặt nữa, nên cũng không tạo trước trên tracker.
+LEGACY_LABELS = [PLAN_APPROVED, PLAN_REJECTED, IMPL]
+#: Trạng thái đang dùng — thứ `labels-init` tạo trước trên tracker.
+ACTIVE_LABELS = [x for x in ALL_LABELS if x not in LEGACY_LABELS]
 #: Các label trạng thái loại trừ nhau — đặt cái mới thì gỡ hết cái cũ.
 STATE_LABELS = [TRY, RUNNING, PLAN_READY, PLAN_APPROVED, PLAN_REJECTED, IMPL,
                 MR_CREATED, NO_MR, NEEDS_HUMAN]

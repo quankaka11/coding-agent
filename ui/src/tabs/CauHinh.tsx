@@ -293,7 +293,7 @@ function Build({ state, onChanged }: { state: State; onChanged: () => void }) {
               toast(humanError(err), 'human')
             }
           }}>
-          Tạo 9 nhãn
+          Tạo trạng thái agent
         </button>
       </div>
       {job && (

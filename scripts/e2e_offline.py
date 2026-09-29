@@ -12,10 +12,17 @@ MR; (7) lint đỏ sẵn → commit riêng; (8) test pass sẵn → agent viết
 chạy song song; (13) relaxed + test pass sẵn mãi → Draft MR; (14) đổi file dependency →
 G-11 cần review; (15) agent không đổi code → NO_MR/no_change; (16) agent hỏi → người trả
 lời bằng comment → chạy lại thì agent đọc được, không hỏi lại; comment sau khi duyệt đi vào
-prompt implement và mô tả MR. Mọi việc diễn ra trên MỘT
-ticket (không còn ticket [impl] con). Mọi thứ ghi vào work/e2e-offline/ (đã gitignore).
+prompt implement và mô tả MR; (17) preflight token hỏng → dừng trước khi gọi agent;
+(18) mở MR hỏng → sửa rồi chuyển agent:try → chỉ thử lại bước mở MR, không gọi agent;
+(19) gate fail → comment + agent:try → làm tiếp trên code cũ, không viết lại test;
+(20) góp ý trên MR + agent:try → đẩy thêm commit, cập nhật MR đang mở; (21) góp ý trên plan
+chưa duyệt + agent:try → sửa plan, tự duyệt vì không mở rộng phạm vi → MR; (22) góp ý làm
+plan mở rộng phạm vi → đưa lại người duyệt; (23) sửa hồ sơ repo → vòng quét sau dùng bản mới.
+Duyệt plan = chuyển ticket về `agent:try` ngay sau plan; `agent:plan-approved` (trạng thái
+cũ) vẫn chạy được. Mọi việc diễn ra trên MỘT ticket (không còn ticket [impl] con). Mọi thứ
+ghi vào work/e2e-offline/ (đã gitignore).
 """
-import json, shutil, subprocess, sys, textwrap, time
+import json, os, shutil, subprocess, sys, textwrap, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / "work" / "e2e-offline"
@@ -26,7 +33,9 @@ from e2e_agent.agent.headless import StubAgent
 from e2e_agent.config import profile as profile_mod
 from e2e_agent.core.reasons import Reason
 from e2e_agent.forge.file import FileForge
-from e2e_agent.pipeline.orchestrator import Orchestrator, RUNNING_MARK, DETAIL_MARK, MR_MARK
+from e2e_agent.pipeline.orchestrator import (Orchestrator, RUNNING_MARK, DETAIL_MARK, MR_MARK,
+                                             APPROVE_MARK)
+from e2e_agent.pipeline import checkpoint
 from e2e_agent.tracker import base as L
 from e2e_agent.tracker.file import FileTracker
 
@@ -230,15 +239,18 @@ def main():
     print("(1) OK — base = origin tip", newer[:8])
 
     tickets_before = len(list((ROOT / "backlog/tickets").glob("*.yaml")))
-    tracker.set_state(t.id, L.PLAN_APPROVED)
+    tracker.set_state(t.id, L.TRY)                 # duyệt = chuyển về cho agent ngay sau plan
     done = orch.scan_once(); print("vòng 2:", done)
+    assert any(APPROVE_MARK in c for c in tracker.comments(t.id)), "phải ghi dấu duyệt lên ticket"
     assert tracker.get(t.id).labels == [L.MR_CREATED], (tracker.get(t.id).labels, tracker.comments(t.id)[-1])
     assert len(list((ROOT / "backlog/tickets").glob("*.yaml"))) == tickets_before, "không được đẻ ticket con"
     assert any(MR_MARK in c for c in tracker.comments(t.id)), "link MR phải nằm trên ticket"
     assert len(mrs()) == 1
-    # (5) đặt lại plan-approved lần nữa → không mở MR thứ hai
+    # (5) đặt lại plan-approved (trạng thái cũ) rồi agent:try không comment → không mở MR thứ hai
     tracker.set_state(t.id, L.PLAN_APPROVED); print("vòng 2b:", orch.scan_once())
     assert len(mrs()) == 1 and tracker.get(t.id).labels == [L.MR_CREATED], "(5) mở hai MR cho một plan"
+    tracker.set_state(t.id, L.TRY); print("vòng 2c:", orch.scan_once())
+    assert len(mrs()) == 1 and tracker.get(t.id).labels == [L.MR_CREATED], "(5) agent:try không góp ý → không làm gì"
     print("(5) OK — duyệt lại plan đã ra MR không mở MR mới")
     branch = [l for l in sh(["git", "branch", "--list", f"agent/{t.id}-*"], repo).split() if l.startswith("agent/")][0]
     files = sh(["git", "ls-tree", "-r", "--name-only", branch], repo).split()
@@ -267,12 +279,12 @@ def main():
     print("(4) OK — plan lạc hậu → về agent:try, plan lại, duyệt lại → MR")
 
     def run_ticket(title, o=None):
-        """Tạo ticket → Phase A → duyệt → Phase B. Trả về (ticket, run_dir của lần chạy cuối)."""
+        """Tạo ticket → Phase A → duyệt (chuyển agent:try) → Phase B. Trả về (ticket, run_dir cuối)."""
         o = o or orch
         t = tracker.create_ticket(title, "Giỏ 3 món giá 5 ra 5 thay vì 15.", [L.TRY])
         o.scan_once()
         if tracker.get(t.id).labels == [L.PLAN_READY]:
-            tracker.set_state(t.id, L.PLAN_APPROVED)
+            tracker.set_state(t.id, L.TRY)
             done = o.scan_once(); print(f"vòng [{title}]:", done)
         return tracker.get(t.id), last_run(t.id)
 
@@ -342,7 +354,7 @@ def main():
     tb = tracker.create_ticket("Ticket 11b: tự duyệt", "Giỏ 3 món giá 5 ra 5 thay vì 15.", [L.TRY])
     done = fast.scan_once(); print("vòng [song song A]:", done)
     assert {x for x, _ in done} == {ta.id, tb.id}, "(12) hai ticket phải chạy Phase A trong cùng một vòng"
-    assert tracker.get(ta.id).labels == [L.PLAN_APPROVED], "(11) T1 phải được tự duyệt"
+    assert tracker.get(ta.id).labels == [L.TRY], "(11) T1 tự duyệt → về lượt agent để viết code"
     done = fast.scan_once(); print("vòng [song song B]:", done)
     assert {x for x, _ in done} == {ta.id, tb.id} and all(o == "OK" for _, o in done), done
     assert tracker.get(ta.id).labels == tracker.get(tb.id).labels == [L.MR_CREATED]
@@ -403,6 +415,132 @@ def main():
     assert NOTE not in agent.prompts["test_gen"], "prompt viết test không được thấy chỉ dẫn cách sửa"
     assert NOTE in mr_of(t16.id)
     print("(16) OK — agent đọc câu trả lời trong comment, không hỏi lại; comment sau duyệt vào implement + MR")
+
+    def agent_calls(since):
+        return [c for c in agent.calls[since:]]
+
+    class Forge(FileForge):
+        """FileForge có thể giả token hỏng (preflight) và mở MR hỏng N lần."""
+        problems: list = []
+        fail_create = 0
+
+        def check(self):
+            return list(self.problems)
+
+        def create_mr(self, *a, **k):
+            if self.fail_create:
+                self.fail_create -= 1
+                raise RuntimeError("POST /merge_requests → 401: token expired")
+            return super().create_mr(*a, **k)
+
+    flaky_forge = Forge(ROOT / "backlog")
+    fo = Orchestrator(prof=profile_mod.load(prof_path), profile_path=prof_path, repo=repo,
+                      tracker=tracker, agent=agent, runs_root=ROOT / "runs", work_root=Path("work"),
+                      package_root=PKG, forge=flaky_forge, log_level="warn", console=True)
+
+    # ---- (17) preflight: token hỏng → dừng TRƯỚC khi gọi agent ---------------------
+    t17 = tracker.create_ticket("Ticket 17: token hỏng", "Giỏ 3 món giá 5 ra 5 thay vì 15.", [L.TRY])
+    fo.scan_once(); tracker.set_state(t17.id, L.TRY)
+    flaky_forge.problems = ["token `bot` hết hạn ngày 2026-09-01"]
+    n = len(agent.calls); print("vòng [17]:", fo.scan_once())
+    assert tracker.get(t17.id).labels == [L.NEEDS_HUMAN] and "forge_auth" in tracker.comments(t17.id)[-1]
+    assert not agent_calls(n), f"(17) không được gọi agent khi token hỏng: {agent_calls(n)}"
+    flaky_forge.problems = []
+    tracker.set_state(t17.id, L.TRY); print("vòng [17b]:", fo.scan_once())
+    assert tracker.get(t17.id).labels == [L.MR_CREATED], tracker.comments(t17.id)[-1]
+    print("(17) OK — token hỏng → dừng trước khi gọi agent; sửa xong chuyển agent:try → MR")
+
+    # ---- (18) mở MR hỏng → sửa → agent:try → CHỈ thử lại bước mở MR ----------------
+    t18 = tracker.create_ticket("Ticket 18: mở MR hỏng", "Giỏ 3 món giá 5 ra 5 thay vì 15.", [L.TRY])
+    fo.scan_once(); tracker.set_state(t18.id, L.TRY)
+    flaky_forge.fail_create = 1
+    print("vòng [18 hỏng]:", fo.scan_once())
+    last18 = tracker.comments(t18.id)[-1]
+    assert tracker.get(t18.id).labels == [L.NEEDS_HUMAN] and "mr_failed" in last18, last18
+    assert "Tiếp theo" in last18 and "mở MR" in last18, last18
+    cp18 = checkpoint.load(ROOT / "runs", t18.id)
+    assert cp18 and cp18.stage == "verified" and cp18.resumable, cp18
+    mrs_before = len(mrs())
+    n = len(agent.calls)
+    tracker.set_state(t18.id, L.TRY); print("vòng [18 thử lại]:", fo.scan_once())
+    assert tracker.get(t18.id).labels == [L.MR_CREATED], tracker.comments(t18.id)[-1]
+    assert not agent_calls(n), f"(18) chỉ thiếu bước mở MR mà vẫn gọi agent: {agent_calls(n)}"
+    assert len(mrs()) == mrs_before + 1
+    ev18 = events(last_run(t18.id))
+    assert any(e["event"] == "resume.reuse" and e["data"]["what"] == "gate+antigaming" for e in ev18)
+    assert f"`{cp18.branch}`" in mr_of(t18.id), "(18) MR phải dùng đúng nhánh của lần trước"
+    print("(18) OK — mở MR hỏng → chuyển agent:try → chỉ mở lại MR, không gọi agent, cùng nhánh")
+
+    # ---- (19) gate fail → comment + agent:try → làm tiếp trên code cũ ---------------
+    state["noop"] = True
+    t19 = tracker.create_ticket("Ticket 19: gate fail rồi làm tiếp", "Giỏ 3 món giá 5 ra 5 thay vì 15.", [L.TRY])
+    orch.scan_once(); tracker.set_state(t19.id, L.TRY); print("vòng [19 fail]:", orch.scan_once())
+    state["noop"] = False
+    assert tracker.get(t19.id).labels == [L.NO_MR], tracker.comments(t19.id)[-1]
+    cp19 = checkpoint.load(ROOT / "runs", t19.id)
+    assert cp19.stage == "test_first", cp19.stage
+    frozen19 = cp19.evidence["test_freeze"]["testfirst_sha"]
+    HINT = "nhân price với quantity ở src/cart.py"
+    tracker.comment(t19.id, HINT)
+    n = len(agent.calls)
+    tracker.set_state(t19.id, L.TRY); print("vòng [19 làm tiếp]:", orch.scan_once())
+    assert tracker.get(t19.id).labels == [L.MR_CREATED], tracker.comments(t19.id)[-1]
+    calls = agent_calls(n)
+    assert calls and all(c.startswith("implement") for c in calls), f"(19) không viết lại test/plan: {calls}"
+    assert HINT in agent.prompts[calls[0]] and "Comment MỚI" in agent.prompts[calls[0]]
+    assert checkpoint.load(ROOT / "runs", t19.id).evidence["test_freeze"]["testfirst_sha"] == frozen19
+    print("(19) OK — gate fail → comment + agent:try → implement tiếp trên code cũ, test giữ nguyên")
+
+    # ---- (20) góp ý trên MR + agent:try → đẩy thêm commit, cập nhật MR ---------------
+    mrs_before = len(mrs())
+    REVIEW = "thêm docstring cho total()"
+    tracker.comment(t19.id, REVIEW)
+    n = len(agent.calls)
+    tracker.set_state(t19.id, L.TRY); print("vòng [20]:", orch.scan_once())
+    assert tracker.get(t19.id).labels == [L.MR_CREATED], tracker.comments(t19.id)[-1]
+    assert len(mrs()) == mrs_before, "(20) không được mở MR thứ hai"
+    assert "đã cập nhật theo góp ý" in tracker.comments(t19.id)[-1], tracker.comments(t19.id)[-1]
+    calls = agent_calls(n)
+    assert calls and REVIEW in agent.prompts[calls[0]], calls
+    assert REVIEW in mr_of(t19.id), "(20) mô tả MR phải được thay bằng bản mới"
+    print("(20) OK — góp ý trên MR → agent sửa trên nhánh MR, cập nhật MR đang mở")
+
+    # ---- (21) góp ý trên plan chưa duyệt + agent:try → sửa plan, tự duyệt → MR -------
+    t21 = tracker.create_ticket("Ticket 21: góp ý plan", "Giỏ 3 món giá 5 ra 5 thay vì 15.", [L.TRY])
+    orch.scan_once()
+    assert tracker.get(t21.id).labels == [L.PLAN_READY]
+    FEEDBACK = "đừng đổi tên hàm total"
+    tracker.comment(t21.id, FEEDBACK)
+    tracker.set_state(t21.id, L.TRY); print("vòng [21 sửa plan]:", orch.scan_once())
+    assert tracker.get(t21.id).labels == [L.TRY], (tracker.get(t21.id).labels, tracker.comments(t21.id)[-1])
+    assert "Plan trước" in agent.prompts["planning"] and FEEDBACK in agent.prompts["planning"]
+    assert any("Plan đã sửa theo góp ý" in c for c in tracker.comments(t21.id))
+    print("vòng [21 viết code]:", orch.scan_once())
+    assert tracker.get(t21.id).labels == [L.MR_CREATED], tracker.comments(t21.id)[-1]
+    print("(21) OK — góp ý + agent:try → sửa plan, không mở rộng phạm vi → tự duyệt → MR")
+
+    # ---- (22) góp ý làm plan mở rộng phạm vi → đưa lại người duyệt -------------------
+    t22 = tracker.create_ticket("Ticket 22: góp ý mở rộng", "Giỏ 3 món giá 5 ra 5 thay vì 15.", [L.TRY])
+    orch.scan_once()
+    tracker.comment(t22.id, "sửa luôn cả src/other.py")
+    state["task_type"] = "T3"                      # intake đổi loại task = mở rộng phạm vi
+    tracker.set_state(t22.id, L.TRY); print("vòng [22]:", orch.scan_once())
+    state["task_type"] = "T1"
+    assert tracker.get(t22.id).labels == [L.PLAN_READY], tracker.get(t22.id).labels
+    plan22 = [c for c in tracker.comments(t22.id) if "e2ea:handoff" in c][-1]
+    assert "MỞ RỘNG phạm vi" in plan22 and "T1" in plan22 and "T3" in plan22, plan22[:600]
+    print("(22) OK — plan sửa mà mở rộng phạm vi → không tự duyệt, đưa lại người")
+
+    # ---- (23) sửa hồ sơ repo → vòng quét sau dùng bản mới, không phải khởi động lại -----
+    before = list(orch.prof.allowed_paths)
+    raw = prof_path.read_text()
+    prof_path.write_text(raw.replace('allowed_paths: ["src/**", "tests/**"]',
+                                     'allowed_paths: ["src/**", "tests/**", "README*"]'))
+    os.utime(prof_path, (time.time() + 5, time.time() + 5))
+    orch.scan_once()
+    assert orch.prof.allowed_paths == before + ["README*"], orch.prof.allowed_paths
+    prof_path.write_text(raw)
+    print("(23) OK — sửa hồ sơ repo → vòng quét sau dùng bản mới")
 
     # Mọi kết cục chỉ thuộc 4 loại; ticket cần người chỉ khi thật sự cần (kẹt run, sai category).
     outcomes = {json.loads(p.read_text())["reason"] for p in (ROOT / "runs").glob("*/*/outcome.json")}

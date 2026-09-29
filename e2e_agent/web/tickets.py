@@ -13,8 +13,8 @@ from pathlib import Path
 from ..tracker import base as L
 from . import workspace as ws_mod
 
-#: Hai trạng thái là việc của người. Mọi cái khác agent tự lo.
-WAITING_ON_HUMAN = (L.PLAN_READY, L.NEEDS_HUMAN)
+#: Lượt của người (chờ duyệt plan, cần người, NO_MR). Mọi cái khác agent tự lo.
+WAITING_ON_HUMAN = (L.PLAN_READY, L.NEEDS_HUMAN, L.NO_MR)
 
 
 def _tracker(root: Path):
@@ -129,14 +129,20 @@ def plan(root: Path, ticket_id: str) -> dict:
 
 
 def approve(root: Path, ticket_id: str) -> dict:
-    """Đổi category sang plan-approved. Vòng quét sau chạy Phase B ngay trên ticket này."""
+    """Ghi dấu duyệt rồi trả ticket về cho agent. Vòng quét sau chạy Phase B trên ticket này.
+
+    Dấu duyệt đi TRƯỚC đổi trạng thái: vòng quét chen vào giữa mà chưa thấy dấu thì vẫn
+    hiểu "chuyển về cho agent ngay sau plan" là duyệt — cùng một kết quả.
+    """
+    from ..pipeline.orchestrator import AGENT_MARK, APPROVE_MARK
     tracker, _ = _tracker(root)
     ticket = tracker.get(ticket_id)
     if L.PLAN_READY not in ticket.labels:
         return {"ok": False, "detail": f"{ticket_id} không ở trạng thái chờ duyệt nữa — "
                                        f"hiện là {', '.join(ticket.labels) or 'không có'}"}
-    tracker.set_state(ticket_id, L.PLAN_APPROVED)
-    _remember(root, ticket_id, L.PLAN_APPROVED)
+    tracker.comment(ticket_id, f"{AGENT_MARK}\n{APPROVE_MARK}\nPlan được duyệt trên giao diện e2ea.")
+    tracker.set_state(ticket_id, L.TRY)
+    _remember(root, ticket_id, L.TRY)
     invalidate(root)
     return {"ok": True, "detail": "Đã duyệt. Vòng quét tới agent bắt đầu viết code trên chính ticket này."}
 
@@ -156,8 +162,14 @@ def reject(root: Path, ticket_id: str, why: str) -> dict:
     if L.PLAN_READY not in ticket.labels:
         return {"ok": False, "detail": f"{ticket_id} không ở trạng thái chờ duyệt nữa"}
     tracker.comment(ticket_id, why)
-    tracker.set_state(ticket_id, L.PLAN_REJECTED)
-    _remember(root, ticket_id, L.PLAN_REJECTED)
+    # Từ chối ≠ góp ý: plan mới luôn lên chờ duyệt lại, không tự duyệt kể cả khi hẹp hơn.
+    # Đi qua đúng đường của orchestrator (đếm số lần, dấu từ chối, trả về agent:try).
+    from ..pipeline.orchestrator import MAX_REJECTS, REJECT_MARK, AGENT_MARK
+    count = sum(1 for c in tracker.comments(ticket_id) if REJECT_MARK in c) + 1
+    tracker.comment(ticket_id, f"{AGENT_MARK}\n{REJECT_MARK}\n**Plan bị từ chối "
+                               f"(lần {count}/{MAX_REJECTS}):** {why}")
+    tracker.set_state(ticket_id, L.TRY)
+    _remember(root, ticket_id, L.TRY)
     invalidate(root)
     return {"ok": True, "detail": "Đã từ chối. Agent sẽ lập plan mới có tính tới lý do này."}
 

@@ -47,6 +47,8 @@ class Kind(str, Enum):
     SCOPE_POLICY = "scope_policy"        # ticket cần sửa file hồ sơ không cho agent đụng
     BUDGET = "budget"                    # vượt trần thời gian/chi phí
     STALE_RUN = "stale_run"              # run đã chết mà chưa chốt kết cục
+    FORGE_AUTH = "forge_auth"            # preflight: token forge hết hạn/thiếu quyền
+    MR_FAILED = "mr_failed"              # code xong, push/mở MR hỏng (token, mạng, GitLab)
     # -- ERROR ----------------------------------------------------------------
     SYSTEM = "system"
 
@@ -55,8 +57,7 @@ class Kind(str, Enum):
 EXPLAIN: dict[Reason, str] = {
     Reason.OK: "Đủ điều kiện tạo MR.",
     Reason.NO_MR: ("Agent đã thử và kết luận không ra MR được. Đây là kết quả hợp lệ: nhánh "
-                   "để lại cho người xem, lý do cụ thể ở dưới. Sửa nguyên nhân rồi đặt lại "
-                   "`agent:try` nếu muốn chạy lại."),
+                   "để lại cho người xem, lý do cụ thể ở dưới."),
     Reason.NEEDS_HUMAN: ("Cần người: bằng chứng không còn tin được, hoặc phải quyết một điều máy "
                          "không có quyền đoán. Agent không tự sửa tiếp."),
     Reason.ERROR: "Hệ thống gặp lỗi ngoài dự kiến.",
@@ -84,14 +85,19 @@ EXPLAIN_KIND: dict[Kind, str] = {
     Kind.FLAKY: "Test không nhất quán giữa các lần chạy — không quarantine, không skip, không xoá.",
     Kind.ANTIGAMING_EVIDENCE: ("Bằng chứng fail-trước hỏng hoặc gate không cùng commit — không ai được "
                                "tự sửa, giữ nguyên hiện trường."),
-    Kind.MISROUTED: ("Ticket bị đặt vào trạng thái dành cho ticket do agent sinh ra. Người chỉ nên đặt "
-                     "`agent:try`; `agent:plan-approved`/`agent:plan-rejected` chỉ dùng trên ticket đã có plan."),
+    Kind.MISROUTED: ("Ticket ở trạng thái không khớp với lịch sử của nó (vd đặt bằng tay, hoặc "
+                     "run của phiên bản cũ). Kiểm tra rồi chuyển `agent:try`."),
     Kind.PROFILE_GAP: "Hồ sơ repo thiếu thứ mà loại task này bắt buộc phải có để kết luận được.",
     Kind.SCOPE_POLICY: ("Ticket cần sửa file mà hồ sơ repo không cho agent đụng. Đây là cấu hình của "
                         "hệ thống: trả lời trong ticket không mở được — người quản trị sửa hồ sơ repo "
-                        "rồi đặt lại `agent:try`, không cần sửa ticket."),
+                        "rồi chuyển `agent:try`, không cần sửa ticket."),
     Kind.BUDGET: "Vượt trần thời gian hoặc chi phí của run.",
     Kind.STALE_RUN: "Run đã bắt đầu từ lâu mà chưa chốt kết cục — tiến trình nhiều khả năng đã bị kill.",
+    Kind.FORGE_AUTH: ("Token GitLab không dùng được để push/mở MR — chưa chạy agent, chưa tốn gì. "
+                      "Sửa token (tab Cấu hình hoặc .env) rồi chuyển `agent:try`."),
+    Kind.MR_FAILED: ("Code đã xong và đã qua gate + anti-gaming, chỉ hỏng ở bước push/mở MR. Sửa nguyên "
+                     "nhân (thường là token) rồi chuyển `agent:try`: agent chỉ thử lại bước tạo MR, "
+                     "không viết lại code."),
     Kind.SYSTEM: "Lỗi hệ thống.",
 }
 

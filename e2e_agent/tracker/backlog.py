@@ -31,33 +31,35 @@ class BacklogError(RuntimeError):
 #: Trạng thái tự tạo có id lớn hơn và đều được coi là "đang mở".
 CLOSED_STATUS_ID = 4
 
-#: Chế độ status: trạng thái logic → tên status trên Backlog. Bốn status mặc định (Open, In
-#: Progress, Resolved, Closed) để nguyên cho đội dùng; agent chỉ đụng ticket ở các status này.
-#: NO_MR và NEEDS_HUMAN chung một status: với người dùng cả hai đều là "tới lượt bạn xem",
-#: lý do cụ thể nằm ở category kết cục và comment. Backlog cho tối đa 8 status tự đặt.
+#: Chế độ status: trạng thái logic → tên status trên Backlog. Status chỉ nói TỚI LƯỢT AI:
+#: `agent_assign` (lượt agent), `agent_working` (agent đang chạy), `human_needed` (lượt người
+#: — duyệt plan, trả lời, xử lý lỗi, review MR). Người xong phần mình thì chuyển
+#: `agent_assign`; agent tự suy ra bước tiếp theo từ lịch sử ticket (orchestrator.route).
+#: Lý do cụ thể nằm ở category kết cục và comment. Bốn status mặc định (Open, In Progress,
+#: Resolved, Closed) để nguyên cho đội dùng.
 STATUS_OF = {
     L.TRY: "agent_assign",
     L.RUNNING: "agent_working",
-    L.PLAN_READY: "human_review_plan",
-    L.PLAN_APPROVED: "human_approve",
-    L.PLAN_REJECTED: "human_reject",
+    L.PLAN_READY: "human_needed",
     L.NO_MR: "human_needed",
     L.NEEDS_HUMAN: "human_needed",
-    L.MR_CREATED: "human_review_mr",
+    L.MR_CREATED: "human_needed",
 }
-#: Status → trạng thái logic. `human_needed` tách lại bằng category kết cục — chỉ để hiển
-#: thị: orchestrator không bao giờ quét hai trạng thái đó.
-_STATE_OF = {status: state for state, status in STATUS_OF.items() if state != L.NO_MR}
-#: Nhãn kết cục (category). Agent ghi để người lọc được; không đọc để ra quyết định.
-OUTCOME_TAG = {L.NO_MR: "agent:no-mr", L.NEEDS_HUMAN: "agent:needs-human",
-               L.MR_CREATED: "agent:mr-created"}
+HUMAN_STATUS = "human_needed"
+#: Status của phiên bản cũ (7 status): chỉ ĐỌC để ticket đang nằm ở đó không bị kẹt; không
+#: tạo mới, không đặt nữa. Xoá được trên Backlog khi không còn ticket nào ở đó.
+LEGACY_STATUS = {"human_review_plan": L.PLAN_READY, "human_approve": L.PLAN_APPROVED,
+                 "human_reject": L.PLAN_REJECTED, "human_review_mr": L.MR_CREATED}
+_STATE_OF = {"agent_assign": L.TRY, "agent_working": L.RUNNING, **LEGACY_STATUS}
+#: Nhãn kết cục (category). Agent ghi để người lọc được; `human_needed` tách lại thành trạng
+#: thái logic bằng nhãn này — chỉ để hiển thị, orchestrator không quét lượt của người.
+OUTCOME_TAG = {L.PLAN_READY: "agent:plan-ready", L.NO_MR: "agent:no-mr",
+               L.NEEDS_HUMAN: "agent:needs-human", L.MR_CREATED: "agent:mr-created"}
 #: Tới lượt người: gán ticket cho người tạo (tracker.assign=creator). Còn lại là lượt agent.
 HUMAN_TURN = {L.PLAN_READY, L.NO_MR, L.NEEDS_HUMAN, L.MR_CREATED}
 #: Thứ tự trên board / dropdown, và màu (API chỉ nhận 10 mã màu cố định).
 _STATUS_COLOR = {"agent_assign": "#3b9dbd", "agent_working": "#868cb7",
-                 "human_review_plan": "#eda62a", "human_approve": "#4caf93",
-                 "human_reject": "#e07b9a", "human_needed": "#ea2c00",
-                 "human_review_mr": "#b0be3c"}
+                 "human_needed": "#ea2c00"}
 _STATE_NAME = re.compile(r"`(agent:[a-z-]+)`")
 
 
@@ -73,7 +75,7 @@ class BacklogTracker:
         self.issue_type_id = issue_type_id
         self.timeout = timeout
         # `api_key` truyền thẳng: màn hình cấu hình thử khoá chưa lưu vào .env.
-        self.api_key = api_key or read_secret(api_key_env)
+        self._api_key, self.api_key_env = api_key, api_key_env
         if not self.api_key:
             raise BacklogError(f"thiếu API key: đặt biến môi trường {api_key_env} hoặc dòng "
                                f"{api_key_env.lower()}=… trong .env")
@@ -84,6 +86,11 @@ class BacklogTracker:
         self._statuses: dict[str, int] | None = None
         self._open_statuses: list[int] | None = None
         self._me: dict | None = None
+
+    @property
+    def api_key(self) -> str:
+        """Đọc lại mỗi lần: sửa khoá trong .env có hiệu lực ngay, không phải khởi động lại."""
+        return self._api_key or read_secret(self.api_key_env)
 
     # -- REST ------------------------------------------------------------
     def _call(self, method: str, path: str, params: list[tuple[str, str]] | None = None):
@@ -126,7 +133,7 @@ class BacklogTracker:
     def _needed(self, states: list[str]) -> tuple[list[str], list[str]]:
         """(status, category) phải có trên project để thể hiện được các trạng thái này."""
         if not self.by_status:
-            return [], list(dict.fromkeys(states))
+            return [], [s for s in dict.fromkeys(states) if s not in L.LEGACY_LABELS]
         wanted = {STATUS_OF[s] for s in states if s in STATUS_OF}
         statuses = [name for name in _STATUS_COLOR if name in wanted]      # thứ tự board
         tags = list(dict.fromkeys(OUTCOME_TAG[s] for s in states if s in OUTCOME_TAG))
@@ -134,7 +141,7 @@ class BacklogTracker:
 
     def missing_states(self, states: list[str] | None = None) -> list[str]:
         """Status/category còn thiếu trên project — cho doctor và màn hình cấu hình."""
-        statuses, tags = self._needed(states or L.ALL_LABELS)
+        statuses, tags = self._needed(states or L.ACTIVE_LABELS)
         have_s = self._status_ids(refresh=True) if statuses else {}
         have_c = self._category_ids(refresh=True) if tags else {}
         return [s for s in statuses if s not in have_s] + [c for c in tags if c not in have_c]
@@ -258,17 +265,23 @@ class BacklogTracker:
 
     def _list_by_status(self, label: str) -> list[Ticket]:
         status = STATUS_OF.get(label)
-        if status is None:
+        legacy = [name for name, state in LEGACY_STATUS.items() if state == label]
+        if status is None and not legacy:
             return []                   # vd `agent:impl` của phiên bản cũ: không có status
         ids = self._status_ids()
-        if status not in ids:
+        if status and status not in ids:
             ids = self._status_ids(refresh=True)
-        if status not in ids:
+        if status and status not in ids:
             # Nói to thay vì trả rỗng: trả rỗng là vòng quét chạy mãi mà không nhận ticket nào.
             raise BacklogError(f"project chưa có status `{status}` — chạy `e2ea labels-init` "
                                f"(hoặc nút Tạo nhãn ở tab Cấu hình)")
-        params = [("projectId[]", str(self.info["id"])), ("statusId[]", str(ids[status])),
-                  ("count", "50"), ("sort", "created"), ("order", "asc")]
+        # Status cũ đã bị xoá khỏi project thì thôi: không còn ticket nào nằm ở đó.
+        wanted = [ids[n] for n in ([status] if status else []) + legacy if n in ids]
+        if not wanted:
+            return []
+        params = [("projectId[]", str(self.info["id"])), ("count", "50"),
+                  ("sort", "created"), ("order", "asc")]
+        params += [("statusId[]", str(i)) for i in wanted]
         tickets = [self._to_ticket(x) for x in self._call("GET", "/issues", params)]
         return [t for t in tickets if label in t.labels]
 
@@ -379,7 +392,10 @@ class BacklogTracker:
 
 
 def _state_of(status: str | None, categories: list[str]) -> str | None:
-    """Status → trạng thái logic. `human_needed` tách NO_MR/NEEDS_HUMAN bằng category."""
-    if status == STATUS_OF[L.NO_MR]:
-        return L.NO_MR if OUTCOME_TAG[L.NO_MR] in categories else L.NEEDS_HUMAN
+    """Status → trạng thái logic. `human_needed` tách lại bằng category kết cục."""
+    if status == HUMAN_STATUS:
+        for state in (L.PLAN_READY, L.MR_CREATED, L.NO_MR):
+            if OUTCOME_TAG[state] in categories:
+                return state
+        return L.NEEDS_HUMAN
     return _STATE_OF.get(status or "")

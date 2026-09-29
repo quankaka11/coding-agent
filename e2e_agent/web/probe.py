@@ -9,7 +9,7 @@ from __future__ import annotations
 import subprocess
 
 from ..core import gitutil
-from ..tracker.base import ALL_LABELS
+from ..tracker.base import ACTIVE_LABELS
 
 # Khoá người vừa gõ được truyền thẳng vào client, KHÔNG đặt vào os.environ:
 # `read_secret` đọc os.environ trước .env, nên đặt tạm ở đó là vòng quét đang
@@ -76,7 +76,7 @@ def tracker(space: str, project: str, api_key: str) -> dict:
         tr = BacklogTracker(space, project, "backlog_api_key", api_key=api_key,
                             state_field=_state_field())
         info = tr.info
-        missing = tr.missing_states(ALL_LABELS)
+        missing = tr.missing_states(ACTIVE_LABELS)
     except Exception as exc:
         return _no(_clean(exc))
     md_ok, md_note = tr.formatting()

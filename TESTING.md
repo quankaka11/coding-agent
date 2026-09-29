@@ -55,7 +55,7 @@ e2ea up
 | `== môi trường test` | `đã cài dependency: …`, `pytest gom test OK` | dòng `TODO:` nói thiếu gì; cài tay vào `venvs/<tên>/bin/python` rồi `up` lại |
 | `đã sinh profiles/<tên>.yaml` | các dòng `đoán:` hợp lý với repo | mở file sửa `allowed_paths`, `commands`; `up` lần sau giữ nguyên |
 | `== doctor` | `ĐẠT` | sửa đúng dòng ❌ |
-| `== category trên tracker` | `đã tạo 9` (lần đầu) và `tracker: {... user ...}` | sai `backlog_api_key` hoặc project |
+| `== category trên tracker` | `đã tạo …` status/category còn thiếu (lần đầu) và `tracker: {... user ...}` | sai `backlog_api_key` hoặc project |
 | `== watch mỗi 60s` | đứng chờ | — |
 
 Để `up` chạy trong terminal này. Mở terminal khác cho các bước sau.
@@ -68,8 +68,9 @@ terminal `up` in `watch.handled … outcome=OK` và ticket sang `agent:plan-read
 **6. Đọc plan** trong comment trên ticket (Google Chat cũng báo). Kiểm nhanh trong
 `~/agent/runs/<KEY>/<run>/`: `spec.yaml` là T1 với 3 AC, `plan.md` có mục "Test sẽ viết".
 
-**7. Duyệt**: đổi category sang **`agent:plan-approved`**. Vòng sau Phase B chạy ngay trên
-ticket đó, 5–10 phút.
+**7. Duyệt**: chuyển lại **`agent_assign`** (`agent:try`), không cần comment. Vòng sau Phase B
+chạy ngay trên ticket đó, 5–10 phút. Muốn sửa plan: viết góp ý rồi chuyển `agent_assign` cùng
+lần Submit — agent sửa plan, không mở rộng phạm vi thì làm tiếp luôn.
 
 **8. Kết quả**: ticket sang `agent:mr-created`, có comment link MR, Chat gửi link MR. Trên
 GitLab, MR có label `agent-generated`, hai commit `test:` rồi `fix:`, diff chỉ đụng
@@ -77,7 +78,8 @@ GitLab, MR có label `agent-generated`, hai commit `test:` rồi `fix:`, diff ch
 
 **9. Nếu dừng ở `agent:needs-human` hoặc `agent:no-mr`**: comment trên ticket có mã kết
 cục và một câu nói phải làm gì; chi tiết trong `runs/<KEY>/<run>/events.jsonl` hoặc
-`e2ea report --run-dir runs/<KEY>/<run>`. Sửa nguyên nhân rồi đặt lại `agent:try`.
+`e2ea report --run-dir runs/<KEY>/<run>`. Sửa nguyên nhân rồi chuyển `agent:try`: agent làm
+tiếp từ bước dừng (dòng **Tiếp theo:** trong comment nói rõ bước nào), không lập lại plan.
 
 Bản offline của y nguyên các bước này, không cần Backlog/GitLab: `.env` chỉ có
 `repo_url=/đường/dẫn/bare-repo.git`, ticket tạo bằng `e2ea new-ticket`, duyệt bằng
@@ -100,12 +102,18 @@ Kết thúc phải in `TẤT CẢ ĐẠT`. Nó kiểm 15 điểm dễ hỏng, tr
 - lượt test_gen đầu viết test pass sẵn trên code cũ → agent viết lại → MR
 - lượt implement đầu đụng file ngoài `scope.modules` → G-10 fail → agent tự sửa → vẫn ra MR
 - lint đỏ sẵn trên `main` → agent sửa bằng commit `chore:` riêng, rồi `test:` → `fix:`
-- đặt lại `agent:plan-approved` trên plan đã ra MR không mở MR thứ hai
+- duyệt = chuyển `agent:try` ngay sau plan; đặt lại `agent:plan-approved` (trạng thái cũ) hay `agent:try` không góp ý trên plan đã ra MR không mở MR thứ hai
 - relaxed + T4 → Draft MR; strict + T4 → `NO_MR/t4`; test pass sẵn sau mọi lượt → Draft MR
 - `auto_approve: [T1]` + `max_parallel: 2` → hai ticket chạy song song, tự duyệt, cùng ra MR
 - agent thêm `requirements.txt` → G-11 cần review, G-3 không bắt oan
 - gate xanh mà agent không đổi code → `NO_MR/no_change`
 - agent hỏi → người trả lời bằng comment → đặt lại `agent:try` thì agent đọc được, không hỏi lại; comment viết sau khi duyệt vào prompt implement và mô tả MR
+- preflight token hỏng → `NEEDS_HUMAN/forge_auth`, không gọi agent; sửa xong `agent:try` → MR
+- mở MR hỏng → `NEEDS_HUMAN/mr_failed`; `agent:try` → chỉ mở lại MR, không gọi agent, cùng nhánh
+- gate fail → comment + `agent:try` → implement tiếp trên code cũ, không viết lại test
+- góp ý trên MR + `agent:try` → đẩy thêm commit, cập nhật MR đang mở, không mở MR thứ hai
+- góp ý trên plan chưa duyệt + `agent:try` → sửa plan, tự duyệt nếu không mở rộng phạm vi; mở rộng thì đưa lại duyệt
+- sửa hồ sơ repo → vòng quét sau dùng bản mới
 
 Hiện trường nằm ở `work/e2e-offline/` (backlog, runs, repo, worktree) để xem lại.
 
@@ -155,7 +163,7 @@ Cần thấy: `runs/T-001/<run>/spec.yaml`, `discovery.md`, `plan.md`; worktree 
 **Duyệt và Phase B.** Đổi label bằng CLI hoặc sửa tay file YAML của ticket:
 
 ```bash
-e2ea approve --profile /tmp/p.yaml --repo /tmp/target --ticket T-001   # T-001 → agent:plan-approved
+e2ea approve --profile /tmp/p.yaml --repo /tmp/target --ticket T-001   # T-001: ghi dấu duyệt → agent:try
 e2ea scan    --profile /tmp/p.yaml --repo /tmp/target                  # Phase B trên T-001
 ```
 
@@ -210,15 +218,21 @@ e2ea up            # clone → venv + dependency → hồ sơ → doctor → cat
 Kiểm từng mốc:
 
 1. Ticket sang `agent:running`, có comment `Agent bắt đầu xử lý (run r-…)`.
-2. Sang `agent:plan-ready`, comment plan có phần `Duyệt / Từ chối`, Google Chat nhận thông báo.
-3. Đổi category `agent:plan-approved` trên Backlog. Vòng sau: ticket về `agent:running`,
+2. Sang `agent:plan-ready` (status `human_needed`), comment plan có phần `Duyệt / Muốn sửa`,
+   Google Chat nhận thông báo.
+3. Chuyển lại `agent:try` (`agent_assign`) trên Backlog. Vòng sau: ticket về `agent:running`,
    Phase B chạy ngay trên ticket đó.
 4. Ticket sang `agent:mr-created`, có comment link MR, Chat nhận link MR.
 5. Trên GitLab: MR có label `agent-generated`, nhánh `agent/<KEY>-xxxx`, mô tả có
    payload ẩn `e2ea:task` (xem ở chế độ raw).
 
-**Từ chối qua category.** Viết comment lý do TRƯỚC, rồi mới đổi sang `agent:plan-rejected`.
-Vòng sau ticket về `agent:try`, plan mới phải nhắc tới lý do vừa ghi.
+**Góp ý plan.** Viết góp ý rồi chuyển `agent:try` cùng lần Submit. Vòng sau agent sửa plan: có
+comment `Plan đã sửa theo góp ý` (tự duyệt, viết code luôn) hoặc `Plan chờ duyệt (đã sửa theo
+góp ý)` kèm cảnh báo mở rộng phạm vi. Từ chối hẳn thì dùng nút Từ chối trên giao diện hoặc
+`e2ea reject`.
+
+**Làm tiếp sau lỗi.** Sửa sai token GitLab trong `.env` rồi duyệt một plan: phải dừng ngay ở
+`NEEDS_HUMAN/forge_auth`, chưa gọi agent. Sửa lại token, chuyển `agent:try` → chạy tiếp tới MR.
 
 **Ticket đã Closed** nhưng còn category `agent:try` không được chạy lại: đóng một ticket
 thử rồi `e2ea scan`, phải in `không có ticket nào ở trạng thái chờ xử lý`.
@@ -341,8 +355,8 @@ Không sao ở bước này, nhưng ghi lại để đối chiếu ở bước 4
 
 ### Bước 3 — từ chối một lần rồi duyệt (kiểm vòng reject)
 
-Chỉ làm ở lần chạy đầu để chắc vòng từ chối kín. Viết comment lý do trước, rồi đổi
-category sang `agent:plan-rejected` (mức 3), hoặc:
+Chỉ làm ở lần chạy đầu để chắc vòng từ chối kín. Bấm Từ chối kèm lý do trên giao diện
+(mức 3), hoặc:
 
 ```bash
 e2ea reject --profile p.yaml --repo /path/clone --ticket <KEY> \
@@ -353,10 +367,10 @@ Vòng sau ticket về `agent:try`, Phase A chạy lại, plan mới **phải** c
 comment plan lần 2 nằm dưới comment `Plan bị từ chối (lần 1/2)`. Rồi duyệt:
 
 ```bash
-e2ea approve --profile p.yaml --repo /path/clone --ticket <KEY>     # hoặc đổi category
+e2ea approve --profile p.yaml --repo /path/clone --ticket <KEY>     # hoặc chuyển agent:try
 ```
 
-Ticket sang `agent:plan-approved`; vòng quét sau chạy Phase B ngay trên ticket đó.
+Ticket có comment dấu duyệt và về `agent:try`; vòng quét sau chạy Phase B ngay trên ticket đó.
 
 ### Bước 4 — Phase B, chờ ~5–10 phút
 

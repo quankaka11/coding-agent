@@ -250,7 +250,7 @@ def next_runs(runs_root: Path, task_id: str) -> dict[str, dict]:
 _DECIDED = {
     "agent:plan-approved": ("plan đã duyệt", "Đã duyệt — agent viết code ở vòng quét tới."),
     "agent:plan-rejected": ("plan bị từ chối", "Đã từ chối — agent lập plan mới ở vòng quét tới."),
-    "agent:try": ("chờ lập plan lại", "Ticket đã về hàng chờ lập plan."),
+    "agent:try": ("đã chuyển cho agent", "Ticket đã về lượt agent — agent làm bước tiếp theo ở vòng quét tới."),
     "agent:running": ("đang xử lý", "Agent đang xử lý ticket này."),
 }
 

@@ -49,7 +49,7 @@ export const T = {
   cancel: 'Thôi',
 } as const
 
-/** Chín nhãn trạng thái của tracker, bằng tiếng người. */
+/** Tên trạng thái logic của tracker, bằng tiếng người (gồm cả trạng thái của phiên bản cũ). */
 export const LABEL_WORDS: Record<string, string> = {
   'agent:try': T.queued,
   'agent:running': T.running,
